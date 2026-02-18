@@ -1,6 +1,6 @@
-
 #include <stdexcept>
 #include <string>
+#include <cstring>
 #include <filesystem>
 #include "JudgeAPI.h"
 #ifdef _WIN32
