@@ -191,3 +191,13 @@ target_link_libraries(main_judger
 )
 
 add_compile_definitions(TOML_ENABLE_WINDOWS_COMPAT PLOG_ENABLE_WCHAR_INPUT)
+
+install(TARGETS main_judger
+        RUNTIME DESTINATION bin)
+
+install(TARGETS judge C1LinesWordsIgnoreCase
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin)
+
+install(FILES JudgeAPI.h
+        DESTINATION include/judger)
