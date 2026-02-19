@@ -1,11 +1,11 @@
 #pragma once
 #include "Base.h"
 #include <string_view>
-enum class ParseType{
-    JSON,
-    YAML,
-    TOML,
-    XML,
+enum class ParseType {
+  JSON,
+  YAML,
+  TOML,
+  XML,
 };
 template <ParseType T>
 void ParseTestSettings(const std::string_view &sv, Testcases &tc);
