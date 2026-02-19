@@ -1,0 +1,9 @@
+*
+!*/
+!*.cpp
+!*.c
+!*.h
+!README.md
+!LICENSE
+!CMakeLists.txt
+!.git*

@@ -66,11 +66,13 @@ public:
 template <>
 class CPError<CPErrors::IR> : public CPErrorBase {
 public:
-    CPError(uint32_t error){
+    const uint32_t exit_code;
+    CPError(uint32_t error) : exit_code(error){
         std::string s;
         s.resize(8);  // max hex digits for 32-bit unsigned
 
         auto [ptr, ec] = std::to_chars(s.data(), s.data() + s.size(), error, 16);
         CPErrorBase("Invalid return: "+s);
     }
+
 };

@@ -1,6 +1,7 @@
 #include "ProcessIO.h"
 #include <chrono>
 #include <signal.h>
+#include <iostream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -226,6 +227,7 @@ ProcessResult run_command(
         throw CPError<CPErrors::IE>("fork failed");
 
     if (pid == 0) {
+        // Child process
         dup2(stdin_pipe[0], STDIN_FILENO);
         dup2(stdout_pipe[1], STDOUT_FILENO);
         dup2(stderr_pipe[1], STDERR_FILENO);
@@ -244,10 +246,12 @@ ProcessResult run_command(
         _exit(127);
     }
 
+    // Parent process
     close(stdin_pipe[0]);
     close(stdout_pipe[1]);
     close(stderr_pipe[1]);
 
+    // Write stdin data if provided
     if (!stdin_data.empty())
         write(stdin_pipe[1], stdin_data.data(), stdin_data.size());
     close(stdin_pipe[1]);
@@ -263,62 +267,89 @@ ProcessResult run_command(
         FD_SET(stderr_pipe[0], &fds);
 
         struct timeval tv;
-        tv.tv_sec  = 0;
-        tv.tv_usec = 10000;
+        tv.tv_sec = 0;
+        tv.tv_usec = 10000; // 10ms timeout for select
 
         select(std::max(stdout_pipe[0], stderr_pipe[0]) + 1, &fds, nullptr, nullptr, &tv);
 
+        // Read from stdout
         if (FD_ISSET(stdout_pipe[0], &fds)) {
             ssize_t r = read(stdout_pipe[0], buf, sizeof(buf));
             if (r > 0) {
                 out_buf.append(buf, (size_t)r);
                 if (out_buf.size() > maxOutputBytes) {
                     kill(pid, SIGKILL);
+                    waitpid(pid, nullptr, 0); // Reap zombie
                     throw CPError<CPErrors::OLE>();
                 }
             }
         }
+
+        // Read from stderr
         if (FD_ISSET(stderr_pipe[0], &fds)) {
             ssize_t r = read(stderr_pipe[0], buf, sizeof(buf));
             if (r > 0) {
                 err_buf.append(buf, (size_t)r);
                 if (err_buf.size() > maxOutputBytes) {
                     kill(pid, SIGKILL);
+                    waitpid(pid, nullptr, 0); // Reap zombie
                     throw CPError<CPErrors::OLE>();
                 }
             }
         }
 
+        // Check if child has exited (non-blocking)
         int status;
-        pid_t rv = waitpid(pid, &status, WNOHANG);
+        struct rusage usage;
+        pid_t rv = wait4(pid, &status, WNOHANG, &usage);
+        
         if (rv == pid) {
             finished = true;
 
             auto end_wall = std::chrono::high_resolution_clock::now();
             float wall_secs = std::chrono::duration<float>(end_wall - start_wall).count();
 
-            struct tms t;
-            times(&t);
-            long ticks = sysconf(_SC_CLK_TCK);
-            float cpu_secs = (t.tms_cutime + t.tms_cstime) / (float)ticks;
+            // CPU time from the child-specific rusage (not accumulated across calls)
+            float user_cpu_time = usage.ru_utime.tv_sec + usage.ru_utime.tv_usec / 1e6;
+            float system_cpu_time = usage.ru_stime.tv_sec + usage.ru_stime.tv_usec / 1e6;
+            float total_cpu_time = user_cpu_time + system_cpu_time;
+            float cpu_secs = total_cpu_time;
 
             uint32_t ec = 0;
             if (WIFEXITED(status))
                 ec = (uint32_t)WEXITSTATUS(status);
+            else if (WIFSIGNALED(status))
+                ec = 128 + (uint32_t)WTERMSIG(status); // Common convention for signal exit
 
-            if (cpu_secs > time_limit_sec) throw CPError<CPErrors::TLE>();
+            // Check CPU time limit after process exits
+            if (cpu_secs > time_limit_sec) {
+                throw CPError<CPErrors::TLE>();
+            }
+
+            // Debug output (optional)
+            std::cerr << "Wall: " << wall_secs << "s, CPU: " << cpu_secs << "s\n";
+
+            // Close remaining pipes
+            close(stdout_pipe[0]);
+            close(stderr_pipe[0]);
+
             return { out_buf, err_buf, ec, cpu_secs };
         }
 
+        // Check wall time limit
         auto now_wall = std::chrono::high_resolution_clock::now();
         float elapsed = std::chrono::duration<float>(now_wall - start_wall).count();
+        
         if (elapsed > time_limit_sec) {
             kill(pid, SIGKILL);
+            waitpid(pid, nullptr, 0); // Reap zombie
             throw CPError<CPErrors::TLE>();
         }
     }
 
-    // unreachable
+    // Should never reach here
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
     throw CPError<CPErrors::IE>("unexpected termination");
 #endif
 }

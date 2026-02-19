@@ -225,11 +225,20 @@ int main(int argc, char **argv) {
     else{
       testcases[name].InputFile=name+".INP";
       testcases[name].OutputFile=name+".OUT";
+      testcases[name].EvaluatorName=
+#ifdef _WIN32
+	"C1LinesWordsIgnoreCase.dll";
+#else
+	"libC1LinesWordsIgnoreCase.so";
+#endif
+      testcases[name].MemoryLimit=1024;
+      testcases[name].TimeLimit=1.0;
+      testcases[name].Mark=1.0;
       for (auto& test:fs::directory_iterator(fd)){
         //tests.path().relative_path().stem().string()
         //problem file i/o=name+".INP/OUT"
         if (!test.is_directory()) continue;
-        testcases[name].subtests.push_back(Subtest{test.path().relative_path().stem().string(), 1024, 1000, 1.0});
+        testcases[name].subtests.push_back(Subtest{test.path().relative_path().stem().string(), -1, -1, 1.0});
       }
     }
   }

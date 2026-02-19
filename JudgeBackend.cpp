@@ -13,10 +13,10 @@
 #include <windows.h>
 #endif
 using namespace std;
-namespace fs=std::filesystem;
+namespace fs = std::filesystem;
+
 // Function to generate a random string of a specified length
 string random_string(size_t length) {
-    // Define the possible characters in the random string
     const string characters =
         "0123456789"
         "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -36,6 +36,7 @@ string random_string(size_t length) {
 
     return random_string;
 }
+
 vector<string> split_args_quoted(const string& s) {
     vector<string> out;
     string cur;
@@ -59,6 +60,7 @@ vector<string> split_args_quoted(const string& s) {
 
     return out;
 }
+
 optional<CompilerItem> find_compiler(
     const vector<CompilerItem>& items,
     const string& ext
@@ -68,6 +70,7 @@ optional<CompilerItem> find_compiler(
             return it;
     return nullopt;
 }
+
 optional<fs::path> find_source_file(
     const fs::path& submissionDir,
     const std::string& problem
@@ -79,13 +82,13 @@ optional<fs::path> find_source_file(
         if (!entry.is_regular_file())
             continue;
 
-        if (entry.path().stem().string()==problem)
+        if (entry.path().stem().string() == problem)
             return entry.path();
     }
     return nullopt;
 }
-optional<fs::path> find_executable(const fs::path& workdir)
-{
+
+optional<fs::path> find_executable(const fs::path& workdir) {
     for (const auto& entry : fs::directory_iterator(workdir)) {
         if (!entry.is_regular_file())
             continue;
@@ -101,6 +104,7 @@ optional<fs::path> find_executable(const fs::path& workdir)
     }
     return nullopt;
 }
+
 bool parse_compiler_cmd(
     const std::string& cmd,
     std::string &rawCmd,
@@ -125,24 +129,20 @@ bool parse_compiler_cmd(
 }
 
 std::string load_file_to_string(const fs::path& filename) {
-    // Open the file in binary mode for consistent handling of file sizes
     std::ifstream file(fs::canonical(filename).string(), std::ios::binary); 
 
     if (!file.is_open()) {
-        // Handle error if file cannot be opened
         throw std::runtime_error("Failed to open file: " + filename.string());
     }
 
-    // Read the entire file content into the string using iterators
     std::string content((std::istreambuf_iterator<char>(file)), 
                         std::istreambuf_iterator<char>());
-
-    // The file is automatically closed when the ifstream object goes out of scope
-
     return content;
 }
-int idx=0;
+
+int idx = 0;
 std::map<std::pair<string, string>, double> scores;
+
 void judge(
     fs::path subdir,
     fs::path tdir,
@@ -192,12 +192,13 @@ void judge(
 
     string rawCmd, rawWorkDir;
     if (!parse_compiler_cmd(compiler->cmd, rawCmd, rawWorkDir)) {
-        PLOGE<< "[" << user << "/" << problem << "] malformed compiler command";
+        PLOGE << "[" << user << "/" << problem << "] malformed compiler command";
         return;
     }
+
     fs::path workdir = expand_percent_vars(
         rawWorkDir,
-        {{"PATH", (fs::path(conf.environment.contestHouse) / "judgeWORK"/random_string(16)).string()}}
+        {{"PATH", (fs::path(conf.environment.contestHouse) / "judgeWORK" / random_string(16)).string()}}
     );
 
     fs::create_directories(workdir);
@@ -208,8 +209,10 @@ void judge(
         rawCmd,
         {{"NAME", name}, {"EXT", ext}, {"PATH", path}}
     );
-    PLOGD << "[" << user << "/" << problem << "] compiling with: ["<<expandedCmd << "] at ["<<workdir<<"]";
-    
+
+    PLOGD << "[" << user << "/" << problem << "] compiling with: [" << expandedCmd << "] at [" << workdir << "]";
+
+    // Compile the code
     ProcessResult compileInfo;
     compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "", 60.0);
     if (compileInfo.exit_code != 0) {
@@ -219,96 +222,82 @@ void judge(
         return;
     }
 
+    // Find the compiled executable
     auto exe = find_executable(workdir);
     if (!exe) {
         _LOG(plog::error, "[" << user << "/" << problem << "] executable not found");
         return;
     }
 
-    _LOG(plog::info, "[" << user << "/" << problem << "] compiled successfully at "<<*exe);
+    _LOG(plog::info, "[" << user << "/" << problem << "] compiled successfully at " << *exe);
 
-    // next: execution + judging using tests
-    Load(fs::canonical(judger_path/tests.EvaluatorName).string().c_str());
+    // Load evaluator
+    Load(fs::canonical(judger_path / tests.EvaluatorName).string().c_str());
     PLOGI << "[" << user << "/" << problem << "] loaded evaluator successfully";
-    double points=0.0;
-    for (auto& tc: tests.subtests){
-        fs::remove(workdir/tests.InputFile);
-        fs::remove(workdir/tests.OutputFile);
-        PLOGI <<  "[" << user << "/" << problem << "/"<<tc.Name<<"] judging...";
-        if (tests.UseStdIn){
-            std::string input=load_file_to_string(tdir/problem/tc.Name/tests.InputFile);
-            ProcessResult result;
-            try{
-                result=run_command({fs::canonical(*exe).string()}, workdir, input, tc.TimeLimit==-1?tests.TimeLimit:tc.TimeLimit, tc.MemoryLimit==-1?tests.MemoryLimit:tc.MemoryLimit);
-                if (result.exit_code!=0) throw CPError<CPErrors::IR>(result.exit_code);
-                _LOG(plog::info, "Time ~"<<result.time<<" seconds");
+
+    double points = 0.0;
+    for (auto& tc : tests.subtests) {
+        float timeLimit = tc.TimeLimit == -1 ? tests.TimeLimit : tc.TimeLimit;
+        float memoryLimit = tc.MemoryLimit == -1 ? tests.MemoryLimit : tc.MemoryLimit;
+
+        fs::remove(workdir / tests.InputFile);
+        fs::remove(workdir / tests.OutputFile);
+
+        PLOGI << "[" << user << "/" << problem << "/" << tc.Name << "] judging...";
+
+        try {
+            if (tests.UseStdIn) {
+                std::string input = load_file_to_string(tdir / problem / tc.Name / tests.InputFile);
+                ProcessResult result = run_command({fs::canonical(*exe).string()}, workdir, input, timeLimit, memoryLimit);
+                if (result.exit_code != 0) throw CPError<CPErrors::IR>(result.exit_code);
+                if (result.time > timeLimit) throw CPError<CPErrors::TLE>();
+
+                _LOG(plog::info, "Time ~" << result.time << " seconds");
+
+                if (tests.UseStdOut) {
+                    ofstream output(tdir / problem / tc.Name / tests.OutputFile);
+                    output << result.stdout_data;
+                }
             }
-            catch(CPError<CPErrors::TLE>& e){
-                _LOG(plog::error, "[" << user << "/" << problem << "] TLEd "<<tc.Name);
-                continue;
+            else {
+                fs::copy_file(tdir / problem / tc.Name / tests.InputFile, workdir / tests.InputFile);
+                if (!tests.UseStdOut) fs::copy_file(tdir / problem / tc.Name / tests.OutputFile, workdir / tests.OutputFile);
+
+                ProcessResult result = run_command({fs::canonical(*exe).string()}, workdir, "", timeLimit, memoryLimit);
+                if (result.exit_code != 0) throw CPError<CPErrors::IR>(result.exit_code);
+                if (result.time > timeLimit) throw CPError<CPErrors::TLE>();
+
+                _LOG(plog::info, "Time ~" << result.time << " seconds");
+
+                if (tests.UseStdOut) {
+                    ofstream output(tdir / problem / tc.Name / tests.OutputFile);
+                    output << result.stdout_data;
+                }
             }
-            catch(CPError<CPErrors::IR>& e){
-                _LOG(plog::error, "[" << user << "/" << problem << "] exited with code 0x"<<std::hex<<result.exit_code<<std::dec);
-                continue;
-            }
-            catch(std::exception& e){
-                _LOG(plog::error, "[" << user << "/" << problem << "] critical error: "<<e.what());
-                continue;
-            }
-            if (tests.UseStdOut){
-                ofstream output(tdir/problem/tc.Name/tests.OutputFile);
-                output<<result.stdout_data;
-            }
-            else; // do nothing since output file is handled
+            char* comments=nullptr;
+            double _points = JudgeAPIFuncUTF8(fs::canonical(workdir).string().data(), (tdir / problem / tc.Name).string().data(), strdup(tests.OutputFile.data()), problem.data(), &comments)
+                * (tc.Mark == -1 ? tests.Mark : tc.Mark);
+
+            _LOG(plog::info, "[" << user << "/" << problem << "/" << tc.Name << "]: " << _points << '\n' << comments);
+            free(comments);
+            points += _points;
         }
-        else{
-            fs::copy_file(tdir/problem/tc.Name/tests.InputFile, workdir/tests.InputFile);
-            if (!tests.UseStdOut) fs::copy_file(tdir/problem/tc.Name/tests.OutputFile, workdir/tests.OutputFile);
-            ProcessResult result;
-            try{
-                result=run_command({fs::canonical(*exe).string()}, workdir, "", tc.TimeLimit==-1?tests.TimeLimit:tc.TimeLimit, tc.MemoryLimit==-1?tests.MemoryLimit:tc.MemoryLimit);
-                if (result.exit_code!=0) throw CPError<CPErrors::IR>(result.exit_code);
-                _LOG(plog::info, "Time ~"<<result.time<<" seconds");
-            }
-            catch(CPError<CPErrors::TLE>& e){
-                _LOG(plog::error, "[" << user << "/" << problem << "] TLEd "<<tc.Name);
-                continue;
-            }
-            catch(CPError<CPErrors::IR>& e){
-                _LOG(plog::error, "[" << user << "/" << problem << "] exited with code 0x"<<std::hex<<result.exit_code<<std::dec);
-                continue;
-            }
-            catch(std::exception& e){
-                _LOG(plog::error, "[" << user << "/" << problem << "] critical error: "<<e.what());
-                continue;
-            }
-            if (tests.UseStdOut){
-                ofstream output(tdir/problem/tc.Name/tests.OutputFile);
-                output<<result.stdout_data;
-            }
+        catch (CPError<CPErrors::TLE>& e) {
+            _LOG(plog::error, "[" << user << "/" << problem << "] TLEd " << tc.Name);
         }
-        std::string workdirStr = fs::canonical(workdir).string();
-        std::string tdirStr = (tdir/problem/tc.Name).string();
-        std::string outputFileStr = tests.OutputFile;
-        char* comments=nullptr;
-        double _points=JudgeAPIFuncUTF8(workdirStr.data(), tdirStr.data(), outputFileStr.data(), problem.data(), &comments)*(tc.Mark==-1?tests.Mark:tc.Mark);
-        
-        PLOGI << "[" << user << "/" << problem << "/" << tc.Name << "]: " 
-            << _points << ":\n" << 
-            #ifdef _WIN32
-            plog::util::toWide(comments, plog::codePage::kUTF8);
-            #else
-            comments;
-            #endif
-        out<< "[" << user << "/" << problem << "/" << tc.Name << "]: " 
-            << _points << ":\n" << comments<<'\n';
-        free(comments);
-        points+=_points;
+        catch (CPError<CPErrors::IR>& e) {
+            _LOG(plog::error, "[" << user << "/" << problem << "] exited with code 0x" << std::hex << e.exit_code << std::dec);
+        }
+        catch (std::exception& e) {
+            _LOG(plog::error, "[" << user << "/" << problem << "] critical error: " << e.what());
+        }
     }
-    _LOG(plog::info, "[" << user << "/" << problem << "]: "<<points);
-    #undef LOG
+
+    _LOG(plog::info, "[" << user << "/" << problem << "]: " << points);
+    #undef _LOG
     out.close();
-    scores[std::make_pair(user, problem)]=points;
+    scores[std::make_pair(user, problem)] = points;
 }
 
-std::map<std::pair<string, string>, double> getScores() { return scores;}
+std::map<std::pair<string, string>, double> getScores() { return scores; }
+

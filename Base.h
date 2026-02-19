@@ -4,7 +4,7 @@
 
 struct Subtest{
   std::string Name;
-  size_t MemoryLimit; // or -1 to inherit
+  int MemoryLimit; // or -1 to inherit
   float TimeLimit;
   float Mark;
 };
