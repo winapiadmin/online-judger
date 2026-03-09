@@ -10,13 +10,15 @@
 //   cl /LD C1LinesWordsIgnoreCase.c
 //
 // Windows (MinGW):
-//   x86_64-w64-mingw32-gcc -shared -o C1LinesWordsIgnoreCase.dll C1LinesWordsIgnoreCase.c
+//   x86_64-w64-mingw32-gcc -shared -o C1LinesWordsIgnoreCase.dll
+//   C1LinesWordsIgnoreCase.c
 //
 // Linux:
 //   gcc -shared -fPIC C1LinesWordsIgnoreCase.c -o libC1LinesWordsIgnoreCase.so
 //
 // macOS:
-//   clang -shared -fPIC C1LinesWordsIgnoreCase.c -o libC1LinesWordsIgnoreCase.dylib
+//   clang -shared -fPIC C1LinesWordsIgnoreCase.c -o
+//   libC1LinesWordsIgnoreCase.dylib
 
 #include <ctype.h>
 #include <stdio.h>
@@ -24,9 +26,9 @@
 #include <string.h>
 
 #ifdef _WIN32
-#include <windows.h>
 #include <wchar.h>
 #include <wctype.h>
+#include <windows.h>
 #endif
 
 #ifdef __cplusplus
@@ -102,7 +104,7 @@ static str **str_split(const str *s, str delim) {
     if (*p == delim)
       count++;
 
-  str **out = (str**)calloc((size_t)count + 1, sizeof(str *));
+  str **out = (str **)calloc((size_t)count + 1, sizeof(str *));
   if (!out) {
     free(tmp);
     return NULL;
@@ -143,8 +145,7 @@ static int split_words(str *buf, str **out, int max) {
   int n = 0;
   str *ctx = NULL;
 
-  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx);
-       tok && n < max;
+  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx); tok && n < max;
        tok = str_tok(NULL, STR_LIT(" \t\r\n"), &ctx))
     out[n++] = tok;
 
@@ -154,30 +155,29 @@ static int split_words(str *buf, str **out, int max) {
 // ------------------------------------------------------------
 // Skip UTF-8 BOM if present
 // ------------------------------------------------------------
-static void skip_bom(FILE *f)
-{
+static void skip_bom(FILE *f) {
   unsigned char bom[3];
   long pos = ftell(f);
 
-  if (fread(bom,1,3,f)==3) {
-    if (!(bom[0]==0xEF && bom[1]==0xBB && bom[2]==0xBF))
-      fseek(f,pos,SEEK_SET);
+  if (fread(bom, 1, 3, f) == 3) {
+    if (!(bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF))
+      fseek(f, pos, SEEK_SET);
   } else {
-    fseek(f,pos,SEEK_SET);
+    fseek(f, pos, SEEK_SET);
   }
 }
 
 // ------------------------------------------------------------
 // Read next word (ASCII safe)
 // ------------------------------------------------------------
-static int next_word(FILE *f, char *buf, int cap)
-{
+static int next_word(FILE *f, char *buf, int cap) {
   int c;
 
   /* skip whitespace */
   do {
     c = fgetc(f);
-    if (c == EOF) return 0;
+    if (c == EOF)
+      return 0;
   } while (isspace((unsigned char)c));
 
   int i = 0;
@@ -198,14 +198,15 @@ static int next_word(FILE *f, char *buf, int cap)
 // ------------------------------------------------------------
 // Compare text files
 // ------------------------------------------------------------
-static int compare_text_files(const str *f1, const str *f2)
-{
+static int compare_text_files(const str *f1, const str *f2) {
   FILE *a = str_fopen(f1, STR_LIT("rb"));
   FILE *b = str_fopen(f2, STR_LIT("rb"));
 
   if (!a || !b) {
-    if (a) fclose(a);
-    if (b) fclose(b);
+    if (a)
+      fclose(a);
+    if (b)
+      fclose(b);
     return -1;
   }
 
@@ -262,12 +263,8 @@ static int join_path(str *out, size_t cap, const str *dir, const str *file) {
 // Exported Judge
 // ------------------------------------------------------------
 DLL_EXPORT
-double API_CALL Judge(
-    str *contestantsDir,
-    str *testsDir,
-    str *testOutputs,
-    str *testName,
-    str **comments_out) {
+double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
+                      str *testName, str **comments_out) {
 
   (void)testName;
 
@@ -277,7 +274,7 @@ double API_CALL Judge(
   *comments_out = NULL;
 
   const size_t BUF = 131072;
-  str *comments = (str*)calloc(BUF, sizeof(str));
+  str *comments = (str *)calloc(BUF, sizeof(str));
 
   str **files = str_split(testOutputs, STR_LIT('|'));
 
@@ -305,7 +302,7 @@ double API_CALL Judge(
 
         score += 1.0;
 
-      } else if (v == 0){
+      } else if (v == 0) {
 
         str_cat_s(comments, BUF,
                   STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n"));

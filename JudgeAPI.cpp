@@ -62,9 +62,7 @@ std::string describe_last_error() {
 
   FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                      FORMAT_MESSAGE_IGNORE_INSERTS,
-                 NULL, code,
-                 0,
-                 (LPWSTR)&buffer, 0, NULL);
+                 NULL, code, 0, (LPWSTR)&buffer, 0, NULL);
 
   std::string result;
   if (buffer) {

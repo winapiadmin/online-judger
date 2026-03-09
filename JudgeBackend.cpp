@@ -1,13 +1,13 @@
 #include "JudgeBackend.h"
 #include "JudgeAPI.h"
 #include "ProcessIO.h"
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <plog/Log.h>
 #include <random>
-#include <algorithm>
 #ifdef _WIN32
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -63,10 +63,10 @@ vector<string> split_args_quoted(const string &s) {
 
 optional<CompilerItem> find_compiler(const vector<CompilerItem> &items,
                                      const string &ext) {
-  for (const auto &it : items){
-    auto _ext=it.ext;
+  for (const auto &it : items) {
+    auto _ext = it.ext;
     std::transform(_ext.begin(), _ext.end(), _ext.begin(),
-               [](unsigned char c){ return std::tolower(c); });
+                   [](unsigned char c) { return std::tolower(c); });
     if (_ext == ext)
       return it;
   }
@@ -74,22 +74,24 @@ optional<CompilerItem> find_compiler(const vector<CompilerItem> &items,
 }
 
 optional<fs::path> find_source_file(const fs::path &submissionDir,
-                                    std::string problem, const vector<CompilerItem>& items) {
+                                    std::string problem,
+                                    const vector<CompilerItem> &items) {
   if (!fs::is_directory(submissionDir))
     return nullopt;
-  std::string problem_=problem;
+  std::string problem_ = problem;
   std::transform(problem_.begin(), problem_.end(), problem_.begin(),
-                 [](unsigned char c){ return std::tolower(c); });
+                 [](unsigned char c) { return std::tolower(c); });
 
   for (const auto &entry : fs::directory_iterator(submissionDir)) {
     if (!entry.is_regular_file())
       continue;
-    auto name=entry.path().stem().string(),ext=entry.path().extension().string();
+    auto name = entry.path().stem().string(),
+         ext = entry.path().extension().string();
     std::transform(name.begin(), name.end(), name.begin(),
-               [](unsigned char c){ return std::tolower(c); });
+                   [](unsigned char c) { return std::tolower(c); });
     std::transform(ext.begin(), ext.end(), ext.begin(),
-               [](unsigned char c){ return std::tolower(c); });
-    if (find_compiler(items,ext)!=nullopt && name==problem_)
+                   [](unsigned char c) { return std::tolower(c); });
+    if (find_compiler(items, ext) != nullopt && name == problem_)
       return entry.path();
   }
   return nullopt;
@@ -146,7 +148,7 @@ std::string load_file_to_string(const fs::path &filename) {
 }
 
 int idx = 0;
-std::map<std::pair<string, string>, std::pair<std::string,double>> scores;
+std::map<std::pair<string, string>, std::pair<std::string, double>> scores;
 
 void judge(fs::path subdir, fs::path tdir, string problem, string user,
            const Configuration &conf,
@@ -182,7 +184,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   if (!sourceFile) {
     _LOG(plog::info,
          "[" << user << "/" << problem << "] source file not found");
-    scores[std::make_pair(user,problem)]=std::make_pair("-",0.0);
+    scores[std::make_pair(user, problem)] = std::make_pair("-", 0.0);
     return;
   }
 
@@ -190,7 +192,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   string name = sourceFile->filename().stem().string();
   string path = sourceFile->string();
   std::transform(ext.begin(), ext.end(), ext.begin(),
-               [](unsigned char c){ return std::tolower(c); });
+                 [](unsigned char c) { return std::tolower(c); });
   auto compiler = find_compiler(conf.compiler.items, ext);
   if (!compiler) {
     _LOG(plog::error,
@@ -200,7 +202,8 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
 
   string rawCmd, rawWorkDir;
   if (!parse_compiler_cmd(compiler->cmd, rawCmd, rawWorkDir)) {
-    PLOGE << "[" << user << "/" << problem << "] malformed compiler command ("<<compiler->cmd<<')';
+    PLOGE << "[" << user << "/" << problem << "] malformed compiler command ("
+          << compiler->cmd << ')';
     return;
   }
 
@@ -221,12 +224,13 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
 
   // Compile the code
   ProcessResult compileInfo;
-  compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "", 600000.0);
+  compileInfo =
+      run_command(split_args_quoted(expandedCmd), workdir, "", 600000.0);
   if (compileInfo.exit_code != 0) {
     _LOG(plog::error, "[" << user << "/" << problem << "] Compiling failed");
     _LOG(plog::error, "stderr:\n" << compileInfo.stderr_data);
     _LOG(plog::error, "stdout:\n" << compileInfo.stdout_data);
-    scores[std::make_pair(user,problem)]=std::make_pair("X",0.0);
+    scores[std::make_pair(user, problem)] = std::make_pair("X", 0.0);
     return;
   }
 
@@ -325,4 +329,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   scores[std::make_pair(user, problem)] = std::make_pair("V", points);
 }
 
-std::map<std::pair<string, string>, std::pair<std::string,double>> getScores() { return scores; }
+std::map<std::pair<string, string>, std::pair<std::string, double>>
+getScores() {
+  return scores;
+}
