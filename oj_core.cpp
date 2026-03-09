@@ -117,6 +117,10 @@ void parseSettingsFormat(const std::string_view sv, Testcases &tc) {
   throw std::runtime_error("File format not implemented");
 }
 int main(int argc, char **argv) {
+  #ifdef _WIN32
+    // Set output code page to UTF-8
+    SetConsoleOutputCP(CP_UTF8);
+  #endif
   std::set_terminate(termination);
   plog::init(plog::verbose, &appender);
   fs::path subdir, tdir, compfile, judgers = "judgers";
@@ -242,11 +246,30 @@ int main(int argc, char **argv) {
         parseSettingsFormat(std::string_view(data.data(), data.size()),
                             testcases[name]);
       }
+      fs::path f=testcases[name].EvaluatorName;
+      f.replace_filename(
+	#if defined(__unix__) || defined(__linux__) || defined(__APPLE__) || defined(__MSYS__)
+	   "lib"+
+	#endif
+	f.filename().string());
+      f.replace_extension(
+	#if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
+	    ".so"
+	#elif defined(_WIN32)
+	    ".dll"
+	#else
+	    f.extension()
+	#endif
+      );
+      testcases[name].EvaluatorName=f.string();
     } else {
       testcases[name].InputFile = name + ".INP";
       testcases[name].OutputFile = name + ".OUT";
       testcases[name].EvaluatorName =
 #ifdef _WIN32
+	#ifdef __MSYS__
+	  "lib"
+	#endif
           "C1LinesWordsIgnoreCase.dll";
 #else
           "libC1LinesWordsIgnoreCase.so";
@@ -303,11 +326,11 @@ int main(int argc, char **argv) {
       double total = 0.0;
       for (const auto &p : problems) {
         auto it = scores.find({u, p});
-        double v = (it != scores.end()) ? it->second : 0.0;
-        total += v;
+        auto v = (it != scores.end()) ? it->second : std::make_pair("",0.0);
+        total += v.second;
 
         std::ostringstream oss;
-        oss << v;
+        oss << v.first<<" "<<v.second;
         width[p] = std::max(width[p], oss.str().size());
       }
 
@@ -323,9 +346,9 @@ int main(int argc, char **argv) {
       std::cout << std::left << std::setw(w) << s;
     };
 
-    auto print_num = [](double v, size_t w) {
+    auto print_num = [](double v, size_t w, string pp) {
       std::ostringstream oss;
-      oss << v;
+      oss <<pp<<' '<<v;
       std::cout << std::right << std::setw(w) << oss.str();
     };
 
@@ -359,13 +382,13 @@ int main(int argc, char **argv) {
       for (const auto &p : problems) {
         std::cout << " | ";
         auto it = scores.find({u, p});
-        double v = (it != scores.end()) ? it->second : 0.0;
-        total += v;
-        print_num(v, width[p]);
+        auto v = (it != scores.end()) ? it->second : std::make_pair("",0.0);
+        total += v.second;
+        print_num(v.second, width[p], v.first);
       }
 
       std::cout << " | ";
-      print_num(total, width["Total"]);
+      print_num(total, width["Total"],"");
       std::cout << "\n";
     }
   };

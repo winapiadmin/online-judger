@@ -161,7 +161,7 @@ ProcessResult run_command(const std::vector<std::string> &command,
     }
 
     // Check wall time
-    auto now_wall = std::chrono::steady_clock::now();
+    auto now_wall = std::chrono::high_resolution_clock::now();
     float wall_secs =
         std::chrono::duration<float>(now_wall - start_wall).count();
 

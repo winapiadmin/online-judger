@@ -14,7 +14,7 @@ static std::wstring utf8_to_wide(const char *s) {
 
   int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
   if (len <= 0)
-    throw std::runtime_error("UTF-8 → UTF-16 conversion failed");
+    throw std::runtime_error("UTF-8 -> UTF-16 conversion failed");
 
   std::wstring w(len, L'\0');
   MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), len);
@@ -63,7 +63,7 @@ std::string describe_last_error() {
   FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                      FORMAT_MESSAGE_IGNORE_INSERTS,
                  NULL, code,
-                 0, // Default language
+                 0,
                  (LPWSTR)&buffer, 0, NULL);
 
   std::string result;
@@ -82,6 +82,7 @@ void Load(const char *path) {
     throw std::runtime_error("Load(): null path");
 
 #if defined(_WIN32)
+
   int len = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
   if (len <= 0)
     throw std::runtime_error("UTF-8 to UTF-16 conversion failed: " +
@@ -124,12 +125,6 @@ void Load(const char *path) {
   _judge = fn;
 
 #else
-  // Linux / POSIX: UTF-8 is the native religion
-  auto p_ = std::filesystem::path(path);
-  if (p_.extension() == ".dll")
-    p_.replace_extension(".so");
-  if (std::string name = p_.filename().string(); !name.starts_with("lib"))
-    p_ = p_.parent_path() / ("lib" + name);
   void *mod = dlopen(p_.string().c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!mod)
     throw std::runtime_error(std::string(dlerror()) + ": " +

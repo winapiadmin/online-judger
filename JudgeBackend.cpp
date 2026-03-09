@@ -7,6 +7,7 @@
 #include <optional>
 #include <plog/Log.h>
 #include <random>
+#include <algorithm>
 #ifdef _WIN32
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -62,22 +63,33 @@ vector<string> split_args_quoted(const string &s) {
 
 optional<CompilerItem> find_compiler(const vector<CompilerItem> &items,
                                      const string &ext) {
-  for (const auto &it : items)
-    if (it.ext == ext)
+  for (const auto &it : items){
+    auto _ext=it.ext;
+    std::transform(_ext.begin(), _ext.end(), _ext.begin(),
+               [](unsigned char c){ return std::tolower(c); });
+    if (_ext == ext)
       return it;
+  }
   return nullopt;
 }
 
 optional<fs::path> find_source_file(const fs::path &submissionDir,
-                                    const std::string &problem) {
+                                    std::string problem, const vector<CompilerItem>& items) {
   if (!fs::is_directory(submissionDir))
     return nullopt;
+  std::string problem_=problem;
+  std::transform(problem_.begin(), problem_.end(), problem_.begin(),
+                 [](unsigned char c){ return std::tolower(c); });
 
   for (const auto &entry : fs::directory_iterator(submissionDir)) {
     if (!entry.is_regular_file())
       continue;
-
-    if (entry.path().stem().string() == problem)
+    auto name=entry.path().stem().string(),ext=entry.path().extension().string();
+    std::transform(name.begin(), name.end(), name.begin(),
+               [](unsigned char c){ return std::tolower(c); });
+    std::transform(ext.begin(), ext.end(), ext.begin(),
+               [](unsigned char c){ return std::tolower(c); });
+    if (find_compiler(items,ext)!=nullopt && name==problem_)
       return entry.path();
   }
   return nullopt;
@@ -134,7 +146,7 @@ std::string load_file_to_string(const fs::path &filename) {
 }
 
 int idx = 0;
-std::map<std::pair<string, string>, double> scores;
+std::map<std::pair<string, string>, std::pair<std::string,double>> scores;
 
 void judge(fs::path subdir, fs::path tdir, string problem, string user,
            const Configuration &conf,
@@ -166,17 +178,19 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
     return;
   }
 
-  auto sourceFile = find_source_file(sourceDir, problem);
+  auto sourceFile = find_source_file(sourceDir, problem, conf.compiler.items);
   if (!sourceFile) {
     _LOG(plog::info,
          "[" << user << "/" << problem << "] source file not found");
+    scores[std::make_pair(user,problem)]=std::make_pair("-",0.0);
     return;
   }
 
   string ext = sourceFile->extension().string();
   string name = sourceFile->filename().stem().string();
   string path = sourceFile->string();
-
+  std::transform(ext.begin(), ext.end(), ext.begin(),
+               [](unsigned char c){ return std::tolower(c); });
   auto compiler = find_compiler(conf.compiler.items, ext);
   if (!compiler) {
     _LOG(plog::error,
@@ -186,7 +200,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
 
   string rawCmd, rawWorkDir;
   if (!parse_compiler_cmd(compiler->cmd, rawCmd, rawWorkDir)) {
-    PLOGE << "[" << user << "/" << problem << "] malformed compiler command";
+    PLOGE << "[" << user << "/" << problem << "] malformed compiler command ("<<compiler->cmd<<')';
     return;
   }
 
@@ -207,11 +221,12 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
 
   // Compile the code
   ProcessResult compileInfo;
-  compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "", 60.0);
+  compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "", 600000.0);
   if (compileInfo.exit_code != 0) {
     _LOG(plog::error, "[" << user << "/" << problem << "] Compiling failed");
     _LOG(plog::error, "stderr:\n" << compileInfo.stderr_data);
     _LOG(plog::error, "stdout:\n" << compileInfo.stdout_data);
+    scores[std::make_pair(user,problem)]=std::make_pair("X",0.0);
     return;
   }
 
@@ -307,7 +322,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   _LOG(plog::info, "[" << user << "/" << problem << "]: " << points);
 #undef _LOG
   out.close();
-  scores[std::make_pair(user, problem)] = points;
+  scores[std::make_pair(user, problem)] = std::make_pair("V", points);
 }
 
-std::map<std::pair<string, string>, double> getScores() { return scores; }
+std::map<std::pair<string, string>, std::pair<std::string,double>> getScores() { return scores; }

@@ -191,7 +191,13 @@ target_link_libraries(main_judger
 )
 
 add_compile_definitions(TOML_ENABLE_WINDOWS_COMPAT PLOG_ENABLE_WCHAR_INPUT)
+# Execute uname and store the result in a variable
+execute_process(COMMAND uname OUTPUT_VARIABLE uname_result OUTPUT_STRIP_TRAILING_WHITESPACE)
 
+# Check if the result matches MSYS or MINGW
+if (uname_result MATCHES "^MSYS" OR uname_result MATCHES "^MINGW")
+  target_compile_definitions(main_judger PRIVATE __MSYS__)
+endif()
 install(TARGETS main_judger
         RUNTIME DESTINATION bin)
 

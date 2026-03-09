@@ -1,8 +1,8 @@
 // C1LinesWordsIgnoreCase.c
 // =============================================================
 //
-// Windows: wchar_t / UTF-16, wide APIs
-// Others : char    / UTF-8, libc
+// Windows: wchar_t / UTF-16
+// Others : char / UTF-8
 //
 // BUILD
 // -----
@@ -10,17 +10,13 @@
 //   cl /LD C1LinesWordsIgnoreCase.c
 //
 // Windows (MinGW):
-//   x86_64-w64-mingw32-gcc -shared -o C1LinesWordsIgnoreCase.dll
-//   C1LinesWordsIgnoreCase.c
+//   x86_64-w64-mingw32-gcc -shared -o C1LinesWordsIgnoreCase.dll C1LinesWordsIgnoreCase.c
 //
 // Linux:
 //   gcc -shared -fPIC C1LinesWordsIgnoreCase.c -o libC1LinesWordsIgnoreCase.so
 //
 // macOS:
-//   clang -shared -fPIC C1LinesWordsIgnoreCase.c -o
-//   libC1LinesWordsIgnoreCase.dylib
-//
-// (or just pick it from CMake)
+//   clang -shared -fPIC C1LinesWordsIgnoreCase.c -o libC1LinesWordsIgnoreCase.dylib
 
 #include <ctype.h>
 #include <stdio.h>
@@ -29,6 +25,8 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <wchar.h>
+#include <wctype.h>
 #endif
 
 #ifdef __cplusplus
@@ -70,12 +68,24 @@ typedef char str;
 #define str_len strlen
 #define str_dup strdup
 #define str_cmp strcmp
-#define str_cat_s(b, c, s) strncat(b, s, (c) - strlen(b) - 1)
-#define str_cpy_s(d, c, s) strncpy(d, s, c)
-#define str_tok strtok_r
 #define str_tolower tolower
 #define str_space isspace
 #define str_fopen(p, m) fopen(p, m)
+
+static void str_cpy_s(str *d, size_t c, const str *s) {
+  if (!d || !s || c == 0)
+    return;
+  strncpy(d, s, c - 1);
+  d[c - 1] = 0;
+}
+
+static void str_cat_s(str *b, size_t c, const str *s) {
+  size_t len = strlen(b);
+  if (len < c - 1)
+    strncat(b, s, c - len - 1);
+}
+
+#define str_tok strtok_r
 #endif
 
 // ------------------------------------------------------------
@@ -92,7 +102,7 @@ static str **str_split(const str *s, str delim) {
     if (*p == delim)
       count++;
 
-  str **out = calloc((size_t)count + 1, sizeof(str *));
+  str **out = (str**)calloc((size_t)count + 1, sizeof(str *));
   if (!out) {
     free(tmp);
     return NULL;
@@ -110,7 +120,7 @@ static str **str_split(const str *s, str delim) {
 }
 
 // ------------------------------------------------------------
-// Utility: trim trailing whitespace
+// Trim trailing whitespace
 // ------------------------------------------------------------
 static void rtrim(str *s) {
   size_t n = str_len(s);
@@ -119,7 +129,7 @@ static void rtrim(str *s) {
 }
 
 // ------------------------------------------------------------
-// Utility: lowercase in-place
+// Lowercase
 // ------------------------------------------------------------
 static void str_lower(str *s) {
   for (; *s; ++s)
@@ -127,13 +137,14 @@ static void str_lower(str *s) {
 }
 
 // ------------------------------------------------------------
-// Utility: split line into words
+// Split line into words
 // ------------------------------------------------------------
 static int split_words(str *buf, str **out, int max) {
   int n = 0;
   str *ctx = NULL;
 
-  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx); tok && n < max;
+  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx);
+       tok && n < max;
        tok = str_tok(NULL, STR_LIT(" \t\r\n"), &ctx))
     out[n++] = tok;
 
@@ -141,53 +152,82 @@ static int split_words(str *buf, str **out, int max) {
 }
 
 // ------------------------------------------------------------
-// Text comparison
+// Skip UTF-8 BOM if present
 // ------------------------------------------------------------
-static int compare_text_files(const str *f1, const str *f2) {
-  FILE *a = str_fopen(f1, STR_LIT("r"));
-  FILE *b = str_fopen(f2, STR_LIT("r"));
+static void skip_bom(FILE *f)
+{
+  unsigned char bom[3];
+  long pos = ftell(f);
+
+  if (fread(bom,1,3,f)==3) {
+    if (!(bom[0]==0xEF && bom[1]==0xBB && bom[2]==0xBF))
+      fseek(f,pos,SEEK_SET);
+  } else {
+    fseek(f,pos,SEEK_SET);
+  }
+}
+
+// ------------------------------------------------------------
+// Read next word (ASCII safe)
+// ------------------------------------------------------------
+static int next_word(FILE *f, char *buf, int cap)
+{
+  int c;
+
+  /* skip whitespace */
+  do {
+    c = fgetc(f);
+    if (c == EOF) return 0;
+  } while (isspace((unsigned char)c));
+
+  int i = 0;
+
+  /* read word */
+  while (c != EOF && !isspace((unsigned char)c)) {
+
+    if (i < cap - 1)
+      buf[i++] = (char)tolower((unsigned char)c);
+
+    c = fgetc(f);
+  }
+
+  buf[i] = 0;
+  return 1;
+}
+
+// ------------------------------------------------------------
+// Compare text files
+// ------------------------------------------------------------
+static int compare_text_files(const str *f1, const str *f2)
+{
+  FILE *a = str_fopen(f1, STR_LIT("rb"));
+  FILE *b = str_fopen(f2, STR_LIT("rb"));
 
   if (!a || !b) {
-    if (a)
-      fclose(a);
-    if (b)
-      fclose(b);
+    if (a) fclose(a);
+    if (b) fclose(b);
     return -1;
   }
 
-  str la[1024], lb[1024];
+  skip_bom(a);
+  skip_bom(b);
 
-#ifdef _WIN32
-  while (fgetws(la, 1024, a) && fgetws(lb, 1024, b)) {
-#else
-  while (fgets(la, 1024, a) && fgets(lb, 1024, b)) {
-#endif
-    rtrim(la);
-    rtrim(lb);
+  char wa[4096];
+  char wb[4096];
 
-    str ca[1024], cb[1024];
-    str_cpy_s(ca, 1024, la);
-    str_cpy_s(cb, 1024, lb);
+  while (1) {
 
-    str_lower(ca);
-    str_lower(cb);
+    int ha = next_word(a, wa, sizeof(wa));
+    int hb = next_word(b, wb, sizeof(wb));
 
-    str *wa[256], *wb[256];
-    int na = split_words(ca, wa, 256);
-    int nb = split_words(cb, wb, 256);
+    if (!ha && !hb)
+      break;
 
-    if (na != nb) {
+    if (ha != hb || strcmp(wa, wb) != 0) {
       fclose(a);
       fclose(b);
       return 0;
     }
-
-    for (int i = 0; i < na; ++i)
-      if (str_cmp(wa[i], wb[i]) != 0) {
-        fclose(a);
-        fclose(b);
-        return 0;
-      }
   }
 
   fclose(a);
@@ -199,59 +239,86 @@ static int compare_text_files(const str *f1, const str *f2) {
 // Path join
 // ------------------------------------------------------------
 static int join_path(str *out, size_t cap, const str *dir, const str *file) {
+
   size_t dl = str_len(dir);
-  if (dl + str_len(file) + 2 > cap)
+  size_t fl = str_len(file);
+
+  if (dl + fl + 2 > cap)
     return 0;
 
   str_cpy_s(out, cap, dir);
-  if (dir[dl - 1] != PATH_SEP) {
+
+  if (dl && dir[dl - 1] != PATH_SEP) {
     out[dl++] = PATH_SEP;
     out[dl] = 0;
   }
+
   str_cat_s(out, cap, file);
+
   return 1;
 }
 
 // ------------------------------------------------------------
-// Exported entry
+// Exported Judge
 // ------------------------------------------------------------
 DLL_EXPORT
-double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
-                      str *testName, str **comments_out) {
+double API_CALL Judge(
+    str *contestantsDir,
+    str *testsDir,
+    str *testOutputs,
+    str *testName,
+    str **comments_out) {
+
   (void)testName;
 
   if (!comments_out)
     return 0.0;
+
   *comments_out = NULL;
 
   const size_t BUF = 131072;
-  str *comments = calloc(BUF, sizeof(str));
+  str *comments = (str*)calloc(BUF, sizeof(str));
 
   str **files = str_split(testOutputs, STR_LIT('|'));
+
   if (!files) {
     free(comments);
     return 0.0;
   }
 
   double score = 0.0;
-  str exp[1024], act[1024];
+
+  str exp[1024];
+  str act[1024];
 
   for (int i = 0; files[i]; ++i) {
+
     if (join_path(exp, 1024, testsDir, files[i]) &&
         join_path(act, 1024, contestantsDir, files[i])) {
-      if (compare_text_files(exp, act) == 1) {
+
+      int v = compare_text_files(exp, act);
+
+      if (v == 1) {
+
         str_cat_s(comments, BUF,
                   STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n"));
+
         score += 1.0;
-      } else
+
+      } else if (v == 0){
+
         str_cat_s(comments, BUF,
                   STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n"));
+      }
     }
+
     free(files[i]);
   }
 
   free(files);
+
   *comments_out = comments;
+
   return score;
 }
 
