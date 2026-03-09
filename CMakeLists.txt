@@ -20,6 +20,28 @@ option(_efsw_FINDPACKAGE "Use system efsw (https://github.com/SpartanJ/efsw) if 
 # =====================
 
 include(FetchContent)
+# ---- zlib ----
+
+if (_ZLIB_FINDPACKAGE)
+  find_package(ZLIB QUIET)
+endif()
+if (NOT TARGET ZLIB::ZLIB)
+  FetchContent_Declare(
+    zlib
+    GIT_REPOSITORY "https://github.com/madler/zlib.git"
+    GIT_TAG develop
+    FIND_PACKAGE_ARGS NAMES ZLIB
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_MakeAvailable(zlib)
+  if(TARGET zlibstatic)
+      add_library(ZLIB::ZLIB ALIAS zlibstatic)
+  elseif (TARGET zlib)
+      add_library(ZLIB::ZLIB ALIAS zlib)
+  endif()
+else()
+  message(STATUS "Found ZLIB")
+endif()
 
 # ---- CLI11 ----
 if (_CLI11_FINDPACKAGE)
@@ -114,28 +136,6 @@ if (NOT nlohmann_json_FOUND)
   FetchContent_MakeAvailable(json)
 else()
   message(STATUS "Found nlohmann_json")
-endif()
-
-# ---- zlib ----
-if (_ZLIB_FINDPACKAGE)
-  find_package(ZLIB QUIET)
-endif()
-if (NOT TARGET ZLIB::ZLIB)
-  FetchContent_Declare(
-    zlib
-    GIT_REPOSITORY "https://github.com/madler/zlib.git"
-    GIT_TAG develop
-    FIND_PACKAGE_ARGS NAMES ZLIB
-    GIT_SHALLOW TRUE
-  )
-  FetchContent_MakeAvailable(zlib)
-  if(TARGET zlibstatic)
-      add_library(ZLIB::ZLIB ALIAS zlibstatic)
-  elseif (TARGET zlib)
-      add_library(ZLIB::ZLIB ALIAS zlib)
-  endif()
-else()
-  message(STATUS "Found ZLIB")
 endif()
 
 # ---- tinyxml2 ----
