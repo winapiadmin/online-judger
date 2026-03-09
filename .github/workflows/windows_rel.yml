@@ -1,0 +1,33 @@
+name: (beta) release for every commit
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Base branch, tag, or commit"
+        required: false
+        default: "main"
+  push:
+
+jobs:
+  build:
+    runs-on: windows-2025-vs2026
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_ref || github.ref }}
+      - name: BUILD
+        run: |
+          mkdir build
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build
+      - name: publish
+        run: |
+          cmake --install build --prefix "publish" --config Debug
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.sha }}
+          name: build-${{ github.sha }}
+          files: publish/**
