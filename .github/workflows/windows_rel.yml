@@ -22,7 +22,7 @@ jobs:
       - name: BUILD
         run: |
           mkdir build
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl
           cmake --build build
       - name: publish
         run: |
