@@ -39,6 +39,7 @@ jobs:
         run: cmake --install build --prefix publish --config Debug
 
       - name: Zip artifacts
+        shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             powershell Compress-Archive -Path publish\* -DestinationPath build-${{ runner.os }}.zip
