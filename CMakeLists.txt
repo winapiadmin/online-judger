@@ -30,7 +30,6 @@ if (NOT TARGET ZLIB::ZLIB)
     zlib
     GIT_REPOSITORY "https://github.com/madler/zlib.git"
     GIT_TAG develop
-    FIND_PACKAGE_ARGS NAMES ZLIB
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(zlib)
