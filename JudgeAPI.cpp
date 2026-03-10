@@ -123,7 +123,7 @@ void Load(const char *path) {
   _judge = fn;
 
 #else
-  void *mod = dlopen(p_.string().c_str(), RTLD_NOW | RTLD_LOCAL);
+  void *mod = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!mod)
     throw std::runtime_error(std::string(dlerror()) + ": " +
                              describe_last_error());
