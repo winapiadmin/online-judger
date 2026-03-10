@@ -42,9 +42,9 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            powershell Compress-Archive -Path publish\* -DestinationPath build-${{ runner.os }}.zip
+            powershell Compress-Archive -Path publish\* -DestinationPath build-${{ runner.os }}-x86_64.zip
           else
-            zip -r build-${{ runner.os }}.zip publish
+            zip -r build-${{ runner.os }}-x86_64.zip publish
           fi
 
       - name: Create Release
