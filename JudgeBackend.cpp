@@ -100,8 +100,8 @@ optional<CompilerItem> find_compiler(const vector<CompilerItem> &items,
 }
 
 optional<fs::path> find_source_file(const fs::path &submissionDir,
-                                     std::string problem,
-                                     const vector<CompilerItem> &items) {
+                                    std::string problem,
+                                    const vector<CompilerItem> &items) {
   if (!fs::is_directory(submissionDir))
     return nullopt;
 
@@ -278,14 +278,15 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
     compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "",
                               kCompileTimeoutSec);
   } catch (const CPError<CPErrors::TLE> &) {
-    _LOG(plog::error, "[" << user << "/" << problem << "] compilation timed out ("
+    _LOG(plog::error, "[" << user << "/" << problem
+                          << "] compilation timed out ("
                           << (int)kCompileTimeoutSec << "s)");
     set_score(user, problem, "X", 0.0);
     return;
   } catch (const CPErrorBase &) {
     // spawn/pipe failures must still yield a verdict, not a blank cell
-    _LOG(plog::error, "[" << user << "/" << problem
-                          << "] internal error while compiling");
+    _LOG(plog::error,
+         "[" << user << "/" << problem << "] internal error while compiling");
     set_score(user, problem, "X", 0.0);
     return;
   }
@@ -350,8 +351,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
         if (tests.UseStdOut) {
           // Contestant stdout belongs in the contestant's own workdir; it must
           // never be written into the test data directory.
-          ofstream output(workdir / tests.OutputFile,
-                          ios::binary | ios::trunc);
+          ofstream output(workdir / tests.OutputFile, ios::binary | ios::trunc);
           output << result.stdout_data;
         }
       } else {
@@ -369,8 +369,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
         _LOG(plog::info, "Time ~" << result.time << " seconds");
 
         if (tests.UseStdOut) {
-          ofstream output(workdir / tests.OutputFile,
-                          ios::binary | ios::trunc);
+          ofstream output(workdir / tests.OutputFile, ios::binary | ios::trunc);
           output << result.stdout_data;
         }
       }
@@ -378,11 +377,11 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
       double _points;
       {
         std::lock_guard<std::mutex> eval_lock(evaluator_mutex(evaluatorKey));
-        _points =
-            CallJudgeUTF8(judgeFn, fs::canonical(workdir).string().c_str(),
-                          (tdir / problem / tc.Name).string().c_str(),
-                          tests.OutputFile.c_str(), problem.c_str(), &comments) *
-            (tc.Mark == -1 ? tests.Mark : tc.Mark);
+        _points = CallJudgeUTF8(
+                      judgeFn, fs::canonical(workdir).string().c_str(),
+                      (tdir / problem / tc.Name).string().c_str(),
+                      tests.OutputFile.c_str(), problem.c_str(), &comments) *
+                  (tc.Mark == -1 ? tests.Mark : tc.Mark);
       }
 
       _LOG(plog::info, "[" << user << "/" << problem << "/" << tc.Name

@@ -673,8 +673,7 @@ void ParseGlobalOptions<ParseType::JSON>(const std::string_view &text,
   }
 }
 
-template <typename Fn>
-static bool try_parse(const std::string_view sv, Fn fn) {
+template <typename Fn> static bool try_parse(const std::string_view sv, Fn fn) {
   try {
     fn(sv);
     return true;

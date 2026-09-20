@@ -34,9 +34,9 @@
 // (verdict only, no extra output).
 #ifndef C5_STRICT
 struct binary_diff {
-  long offset;         /* 0-based byte offset of first difference */
-  int expected_byte;   /* value from the test's answer file (EOF at end) */
-  int actual_byte;     /* value from the contestant's file (EOF at end) */
+  long offset;       /* 0-based byte offset of first difference */
+  int expected_byte; /* value from the test's answer file (EOF at end) */
+  int actual_byte;   /* value from the contestant's file (EOF at end) */
   long expected_size;
   long actual_size;
 };
@@ -78,8 +78,8 @@ typedef char str;
 #define str_len strlen
 #define str_dup strdup
 #define str_tok strtok_r
-#define str_cat_s(b, c, s)                                                                            \
-    strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
+#define str_cat_s(b, c, s)                                                     \
+  strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
 #define str_fopen(p, m) fopen(p, m)
 
 #define PATH_SEP '/'

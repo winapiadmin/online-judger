@@ -113,11 +113,10 @@ double STDCALL CallJudgeUTF8(JudgeFn fn, const char *contestantsDir,
   wchar_t *wComments = nullptr;
 
   // Always pass valid pointers; third-party judge DLLs do not check for null.
-  double result =
-      fn(const_cast<wchar_t *>(wContestantsDir.c_str()),
-         const_cast<wchar_t *>(wTestsDir.c_str()),
-         const_cast<wchar_t *>(wTestOutputs.c_str()),
-         const_cast<wchar_t *>(wTestName.c_str()), &wComments);
+  double result = fn(const_cast<wchar_t *>(wContestantsDir.c_str()),
+                     const_cast<wchar_t *>(wTestsDir.c_str()),
+                     const_cast<wchar_t *>(wTestOutputs.c_str()),
+                     const_cast<wchar_t *>(wTestName.c_str()), &wComments);
 
   if (comments) {
     comments->clear();
@@ -139,10 +138,10 @@ double STDCALL CallJudgeUTF8(JudgeFn fn, const char *contestantsDir,
   return result;
 #else
   char *cComments = nullptr;
-  double result = fn(const_cast<char *>(contestantsDir),
-                     const_cast<char *>(testsDir),
-                     const_cast<char *>(testOutputs ? testOutputs : ""),
-                     const_cast<char *>(testName ? testName : ""), &cComments);
+  double result =
+      fn(const_cast<char *>(contestantsDir), const_cast<char *>(testsDir),
+         const_cast<char *>(testOutputs ? testOutputs : ""),
+         const_cast<char *>(testName ? testName : ""), &cComments);
   if (comments) {
     comments->clear();
     if (cComments)

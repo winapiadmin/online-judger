@@ -373,9 +373,8 @@ ProcessResult run_command(const std::vector<std::string> &command,
   std::thread stdinWriter([&stdin_pipe, &stdin_data] {
     size_t total = 0;
     while (total < stdin_data.size()) {
-      ssize_t w =
-          write(stdin_pipe[1], stdin_data.data() + total,
-                min(stdin_data.size() - total, (size_t)65536));
+      ssize_t w = write(stdin_pipe[1], stdin_data.data() + total,
+                        min(stdin_data.size() - total, (size_t)65536));
       if (w <= 0)
         break; // child died or closed stdin
       total += w;
@@ -421,7 +420,7 @@ ProcessResult run_command(const std::vector<std::string> &command,
     // Read from stdout
     if (FD_ISSET(stdout_pipe[0], &fds)) {
       if (!drain_fd(stdout_pipe[0], out_buf)) {
-        killpg(pid, SIGKILL); /* whole group: orphans die too */
+        killpg(pid, SIGKILL);     /* whole group: orphans die too */
         waitpid(pid, nullptr, 0); // Reap zombie
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
@@ -432,7 +431,7 @@ ProcessResult run_command(const std::vector<std::string> &command,
     // Read from stderr
     if (FD_ISSET(stderr_pipe[0], &fds)) {
       if (!drain_fd(stderr_pipe[0], err_buf)) {
-        killpg(pid, SIGKILL); /* whole group: orphans die too */
+        killpg(pid, SIGKILL);     /* whole group: orphans die too */
         waitpid(pid, nullptr, 0); // Reap zombie
         close(stdout_pipe[0]);
         close(stderr_pipe[0]);
@@ -472,9 +471,9 @@ ProcessResult run_command(const std::vector<std::string> &command,
       constexpr float kDrainGraceSec = 1.0f;
       bool overflow = false;
       bool open_out = true, open_err = true;
-      auto drain_deadline = std::chrono::high_resolution_clock::now() +
-                            std::chrono::milliseconds(
-                                (long long)(kDrainGraceSec * 1000));
+      auto drain_deadline =
+          std::chrono::high_resolution_clock::now() +
+          std::chrono::milliseconds((long long)(kDrainGraceSec * 1000));
       while ((open_out || open_err) && !overflow) {
         fd_set drain_fds;
         FD_ZERO(&drain_fds);
@@ -483,9 +482,10 @@ ProcessResult run_command(const std::vector<std::string> &command,
         if (open_err)
           FD_SET(stderr_pipe[0], &drain_fds);
 
-        auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(
-                             drain_deadline - std::chrono::high_resolution_clock::now())
-                             .count();
+        auto remaining =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                drain_deadline - std::chrono::high_resolution_clock::now())
+                .count();
         if (remaining <= 0)
           break; // orphaned writer; keep what we have
 
@@ -533,7 +533,7 @@ ProcessResult run_command(const std::vector<std::string> &command,
     float elapsed = std::chrono::duration<float>(now_wall - start_wall).count();
 
     if (elapsed > time_limit_sec) {
-      killpg(pid, SIGKILL); /* whole group: orphans die too */
+      killpg(pid, SIGKILL);     /* whole group: orphans die too */
       waitpid(pid, nullptr, 0); // Reap zombie
       close(stdout_pipe[0]);
       close(stderr_pipe[0]);
