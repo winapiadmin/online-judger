@@ -1,6 +1,17 @@
 #pragma once
+#include <algorithm>
 #include <string>
 #include <vector>
+
+// Case-insensitive string comparison (for file extensions, etc.)
+inline bool iequals(const std::string &a, const std::string &b) {
+  if (a.size() != b.size())
+    return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (std::tolower((unsigned char)a[i]) != std::tolower((unsigned char)b[i]))
+      return false;
+  return true;
+}
 
 struct Subtest {
   std::string Name;

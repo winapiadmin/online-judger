@@ -68,12 +68,15 @@ typedef char str;
 #define str_len strlen
 #define str_dup strdup
 #define str_cmp strcmp
-#define str_cat_s(b, c, s) strncat(b, s, (c) - strlen(b) - 1)
+#define str_cat_s(b, c, s)                                                                            \
+    strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
 #define str_cpy_s(d, c, s) strncpy(d, s, c)
 #define str_tok strtok_r
 #define str_tolower tolower
 #define str_space isspace
 #define str_fopen(p, m) fopen(p, m)
+
+#include <unistd.h>
 #endif
 
 // ------------------------------------------------------------
@@ -117,21 +120,102 @@ static void rtrim(str *s) {
 }
 
 // ------------------------------------------------------------
-// Utility: split line into words
+// Utility: compare two lines word-by-word (case-sensitive).
+// Both lines are tokenized in place, so they must be private mutable
+// buffers. Words are compared as they are tokenized: no limit on how many
+// words a line may contain.
+// Returns 1 if equal, 0 if not.
 // ------------------------------------------------------------
-static int split_words(str *buf, str **out, int max) {
-  int n = 0;
-  str *ctx = NULL;
+static int line_words_equal(str *la, str *lb) {
+  static const str seps[] = STR_LIT(" \t");
 
-  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx); tok && n < max;
-       tok = str_tok(NULL, STR_LIT(" \t\r\n"), &ctx))
-    out[n++] = tok;
+  str *ctxa = NULL, *ctxb = NULL;
+  str *ta = str_tok(la, seps, &ctxa);
+  str *tb = str_tok(lb, seps, &ctxb);
 
-  return n;
+  while (ta && tb) {
+    if (str_cmp(ta, tb) != 0)
+      return 0;
+    ta = str_tok(NULL, seps, &ctxa);
+    tb = str_tok(NULL, seps, &ctxb);
+  }
+
+  /* equal only when both lines ran out of words together */
+  return ta == NULL && tb == NULL;
 }
 
 // ------------------------------------------------------------
-// Text comparison
+// Skip UTF-8 BOM if present
+// ------------------------------------------------------------
+static void skip_bom(FILE *f) {
+  unsigned char bom[3];
+  long pos = ftell(f);
+
+  if (fread(bom, 1, 3, f) == 3) {
+    if (!(bom[0] == 0xEF && bom[1] == 0xBB && bom[2] == 0xBF))
+      fseek(f, pos, SEEK_SET);
+  } else {
+    fseek(f, pos, SEEK_SET);
+  }
+}
+
+// ------------------------------------------------------------
+// Read one line of arbitrary length (buffer grows as needed), trimmed of
+// trailing whitespace. Returns a malloc'd line, or NULL at EOF.
+// Sets *ok to 0 on allocation failure (caller treats this as an error).
+// The caller owns and must free the returned buffer.
+// ------------------------------------------------------------
+static str *read_line(FILE *f, int *ok) {
+  size_t cap = 256, len = 0;
+  *ok = 1;
+
+  str *buf = (str *)malloc(cap * sizeof(str));
+  if (!buf) {
+    *ok = 0;
+    return NULL;
+  }
+
+  for (;;) {
+#ifdef _WIN32
+    if (!fgetws(buf + len, (int)(cap - len), f))
+      break; /* EOF */
+#else
+    if (!fgets(buf + len, (int)(cap - len), f))
+      break; /* EOF */
+#endif
+    len += str_len(buf + len);
+
+    if (len > 0 && buf[len - 1] == STR_LIT('\n'))
+      break; /* complete line */
+
+    if (len + 1 < cap)
+      break; /* partial content then EOF */
+
+    /* buffer filled without reaching end of line: grow and continue */
+    cap *= 2;
+    str *nb = (str *)realloc(buf, cap * sizeof(str));
+    if (!nb) {
+      free(buf);
+      *ok = 0;
+      return NULL;
+    }
+    buf = nb;
+  }
+
+  if (len == 0 && feof(f)) {
+    free(buf);
+    return NULL;
+  }
+
+  rtrim(buf);
+  return buf;
+}
+
+// ------------------------------------------------------------
+// Text comparison: line-by-line, word-by-word, case-sensitive.
+// Line lengths are unbounded. Trailing blank lines on either side are
+// ignored; anything else must match positionally.
+// Returns 1 if equal, 0 if different, -1 on open error / allocation failure.
 // ------------------------------------------------------------
 static int compare_text_files(const str *f1, const str *f2) {
   FILE *a = str_fopen(f1, STR_LIT("r"));
@@ -145,41 +229,65 @@ static int compare_text_files(const str *f1, const str *f2) {
     return -1;
   }
 
-  str la[1024], lb[1024];
+  skip_bom(a);
+  skip_bom(b);
 
-#ifdef _WIN32
-  while (fgetws(la, 1024, a) && fgetws(lb, 1024, b)) {
-#else
-  while (fgets(la, 1024, a) && fgets(lb, 1024, b)) {
-#endif
-    rtrim(la);
-    rtrim(lb);
+  int ea = 0, eb = 0;
+  int result = 1;
+  str *la = NULL, *lb = NULL;
 
-    str ca[1024], cb[1024];
-    str_cpy_s(ca, 1024, la);
-    str_cpy_s(cb, 1024, lb);
+  while (result == 1) {
+    if (!ea) {
+      int ok;
+      la = read_line(a, &ok);
+      if (!ok)
+        result = -1;
+      else if (!la)
+        ea = 1;
+    }
+    if (result == 1 && !eb) {
+      int ok;
+      lb = read_line(b, &ok);
+      if (!ok)
+        result = -1;
+      else if (!lb)
+        eb = 1;
+    }
+    if (result != 1)
+      break;
 
-    str *wa[256], *wb[256];
-    int na = split_words(ca, wa, 256);
-    int nb = split_words(cb, wb, 256);
+    if (ea && eb)
+      break;
 
-    if (na != nb) {
-      fclose(a);
-      fclose(b);
-      return 0;
+    if (ea) {
+      /* a finished: b may only have blank lines left */
+      if (lb[0] != 0)
+        result = 0;
+      free(lb);
+      lb = NULL;
+      continue;
+    }
+    if (eb) {
+      if (la[0] != 0)
+        result = 0;
+      free(la);
+      la = NULL;
+      continue;
     }
 
-    for (int i = 0; i < na; ++i)
-      if (str_cmp(wa[i], wb[i]) != 0) {
-        fclose(a);
-        fclose(b);
-        return 0;
-      }
+    if (!line_words_equal(la, lb))
+      result = 0;
+
+    free(la);
+    free(lb);
+    la = lb = NULL;
   }
 
+  free(la);
+  free(lb);
   fclose(a);
   fclose(b);
-  return 1;
+  return result;
 }
 
 // ------------------------------------------------------------
@@ -191,12 +299,25 @@ static int join_path(str *out, size_t cap, const str *dir, const str *file) {
     return 0;
 
   str_cpy_s(out, cap, dir);
-  if (dir[dl - 1] != PATH_SEP) {
+  if (dl && dir[dl - 1] != PATH_SEP) {
     out[dl++] = PATH_SEP;
     out[dl] = 0;
   }
   str_cat_s(out, cap, file);
   return 1;
+}
+
+// ------------------------------------------------------------
+// File existence check
+// ------------------------------------------------------------
+static int file_exists(const str *path) {
+#ifdef _WIN32
+  DWORD attrs = GetFileAttributesW(path);
+  return attrs != INVALID_FILE_ATTRIBUTES &&
+         !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+#else
+  return access(path, F_OK) == 0;
+#endif
 }
 
 // ------------------------------------------------------------
@@ -226,7 +347,11 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
   for (int i = 0; files[i]; ++i) {
     if (join_path(exp, 1024, testsDir, files[i]) &&
         join_path(act, 1024, contestantsDir, files[i])) {
-      if (compare_text_files(exp, act) == 1) {
+      if (!file_exists(act)) {
+        /* Contestant produced no result file */
+        str_cat_s(comments, BUF,
+                  STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n"));
+      } else if (compare_text_files(exp, act) == 1) {
         str_cat_s(comments, BUF,
                   STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n"));
         score += 1.0;

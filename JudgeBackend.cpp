@@ -2,9 +2,13 @@
 #include "JudgeAPI.h"
 #include "ProcessIO.h"
 #include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <plog/Log.h>
 #include <random>
@@ -15,6 +19,31 @@
 #endif
 using namespace std;
 namespace fs = std::filesystem;
+
+namespace {
+std::mutex g_scores_mtx;
+std::map<std::pair<string, string>, std::pair<std::string, double>> g_scores;
+std::atomic<int> g_idx{0};
+
+// One mutex per evaluator path: judge DLLs are not guaranteed thread-safe,
+// so the same library is never invoked concurrently, while different
+// problems' evaluators can still run in parallel.
+std::mutex &evaluator_mutex(const string &key) {
+  static std::mutex map_mtx;
+  static unordered_map<string, std::shared_ptr<std::mutex>> map;
+  lock_guard<mutex> map_lock(map_mtx);
+  auto &entry = map[key];
+  if (!entry)
+    entry = std::make_shared<std::mutex>();
+  return *entry;
+}
+} // namespace
+
+static void set_score(const string &user, const string &problem,
+                      const string &verdict, double points) {
+  lock_guard<mutex> lock(g_scores_mtx);
+  g_scores[{user, problem}] = {verdict, points};
+}
 
 // Function to generate a random string of a specified length
 string random_string(size_t length) {
@@ -64,34 +93,24 @@ vector<string> split_args_quoted(const string &s) {
 optional<CompilerItem> find_compiler(const vector<CompilerItem> &items,
                                      const string &ext) {
   for (const auto &it : items) {
-    auto _ext = it.ext;
-    std::transform(_ext.begin(), _ext.end(), _ext.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    if (_ext == ext)
+    if (iequals(it.ext, ext))
       return it;
   }
   return nullopt;
 }
 
 optional<fs::path> find_source_file(const fs::path &submissionDir,
-                                    std::string problem,
-                                    const vector<CompilerItem> &items) {
+                                     std::string problem,
+                                     const vector<CompilerItem> &items) {
   if (!fs::is_directory(submissionDir))
     return nullopt;
-  std::string problem_ = problem;
-  std::transform(problem_.begin(), problem_.end(), problem_.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
 
   for (const auto &entry : fs::directory_iterator(submissionDir)) {
     if (!entry.is_regular_file())
       continue;
     auto name = entry.path().stem().string(),
          ext = entry.path().extension().string();
-    std::transform(name.begin(), name.end(), name.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    if (find_compiler(items, ext) != nullopt && name == problem_)
+    if (find_compiler(items, ext) != nullopt && iequals(name, problem))
       return entry.path();
   }
   return nullopt;
@@ -147,14 +166,35 @@ std::string load_file_to_string(const fs::path &filename) {
   return content;
 }
 
-int idx = 0;
-std::map<std::pair<string, string>, std::pair<std::string, double>> scores;
+// Timestamp prefix so history files from different runs never collide.
+// Millisecond precision matters: several short-lived processes can judge
+// within the same second, and the per-process counter restarts at 1.
+// Lexicographic order == chronological order.
+static string history_stamp() {
+  auto now = std::chrono::system_clock::now();
+  std::time_t t = std::chrono::system_clock::to_time_t(now);
+  std::tm tm{};
+#ifdef _WIN32
+  localtime_s(&tm, &t);
+#else
+  localtime_r(&t, &tm);
+#endif
+  char stamp[32];
+  std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
+  auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()) %
+            1000;
+  char frac[8];
+  snprintf(frac, sizeof(frac), ".%03d", (int)ms.count());
+  return string(stamp) + frac;
+}
 
 void judge(fs::path subdir, fs::path tdir, string problem, string user,
            const Configuration &conf,
            const unordered_map<string, Testcases> &testcases,
-           fs::path &judger_path) {
-  string fn = std::to_string(++idx) + "[" + user + "][" + problem + "].txt";
+           const fs::path &judger_path) {
+  string fn = history_stamp() + "-" + std::to_string(++g_idx) + "[" + user +
+              "][" + problem + "].txt";
   fs::create_directory(subdir / "$History");
   ofstream out(subdir / "$History" / fn);
   if (!out.is_open()) {
@@ -184,15 +224,13 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   if (!sourceFile) {
     _LOG(plog::info,
          "[" << user << "/" << problem << "] source file not found");
-    scores[std::make_pair(user, problem)] = std::make_pair("-", 0.0);
+    set_score(user, problem, "-", 0.0);
     return;
   }
 
   string ext = sourceFile->extension().string();
   string name = sourceFile->filename().stem().string();
   string path = sourceFile->string();
-  std::transform(ext.begin(), ext.end(), ext.begin(),
-                 [](unsigned char c) { return std::tolower(c); });
   auto compiler = find_compiler(conf.compiler.items, ext);
   if (!compiler) {
     _LOG(plog::error,
@@ -213,6 +251,17 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
                                 .string()}});
 
   fs::create_directories(workdir);
+  // Removes the scratch dir on every exit path (early returns included).
+  // JUDGER_KEEP_WORKDIR disables this for debugging.
+  struct WorkdirCleanup {
+    const fs::path &p;
+    ~WorkdirCleanup() {
+      if (std::getenv("JUDGER_KEEP_WORKDIR"))
+        return;
+      std::error_code ec;
+      fs::remove_all(p, ec);
+    }
+  } workdirCleanup{workdir};
   fs::copy_file(*sourceFile, workdir / sourceFile->filename(),
                 fs::copy_options::overwrite_existing);
 
@@ -222,15 +271,29 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   PLOGD << "[" << user << "/" << problem << "] compiling with: [" << expandedCmd
         << "] at [" << workdir << "]";
 
-  // Compile the code
+  // Compile the code (5-minute cap; slow toolchains / cold AV scans happen)
+  constexpr float kCompileTimeoutSec = 300.0f;
   ProcessResult compileInfo;
-  compileInfo =
-      run_command(split_args_quoted(expandedCmd), workdir, "", 600000.0);
+  try {
+    compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "",
+                              kCompileTimeoutSec);
+  } catch (const CPError<CPErrors::TLE> &) {
+    _LOG(plog::error, "[" << user << "/" << problem << "] compilation timed out ("
+                          << (int)kCompileTimeoutSec << "s)");
+    set_score(user, problem, "X", 0.0);
+    return;
+  } catch (const CPErrorBase &) {
+    // spawn/pipe failures must still yield a verdict, not a blank cell
+    _LOG(plog::error, "[" << user << "/" << problem
+                          << "] internal error while compiling");
+    set_score(user, problem, "X", 0.0);
+    return;
+  }
   if (compileInfo.exit_code != 0) {
     _LOG(plog::error, "[" << user << "/" << problem << "] Compiling failed");
     _LOG(plog::error, "stderr:\n" << compileInfo.stderr_data);
     _LOG(plog::error, "stdout:\n" << compileInfo.stdout_data);
-    scores[std::make_pair(user, problem)] = std::make_pair("X", 0.0);
+    set_score(user, problem, "X", 0.0);
     return;
   }
 
@@ -245,9 +308,19 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   _LOG(plog::info,
        "[" << user << "/" << problem << "] compiled successfully at " << *exe);
 
-  // Load evaluator
-  Load(fs::canonical(judger_path / tests.EvaluatorName).string().c_str());
-  PLOGI << "[" << user << "/" << problem << "] loaded evaluator successfully";
+  // Load evaluator (cached by path; safe to call from any thread)
+  JudgeFn judgeFn = nullptr;
+  string evaluatorKey;
+  try {
+    evaluatorKey = fs::canonical(judger_path / tests.EvaluatorName).string();
+    judgeFn = Load(evaluatorKey.c_str());
+    PLOGI << "[" << user << "/" << problem << "] loaded evaluator successfully";
+  } catch (const std::exception &e) {
+    _LOG(plog::error, "[" << user << "/" << problem
+                          << "] failed to load evaluator: " << e.what());
+    set_score(user, problem, "X", 0.0);
+    return;
+  }
 
   double points = 0.0;
   for (auto &tc : tests.subtests) {
@@ -275,15 +348,16 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
         _LOG(plog::info, "Time ~" << result.time << " seconds");
 
         if (tests.UseStdOut) {
-          ofstream output(tdir / problem / tc.Name / tests.OutputFile);
+          // Contestant stdout belongs in the contestant's own workdir; it must
+          // never be written into the test data directory.
+          ofstream output(workdir / tests.OutputFile,
+                          ios::binary | ios::trunc);
           output << result.stdout_data;
         }
       } else {
         fs::copy_file(tdir / problem / tc.Name / tests.InputFile,
-                      workdir / tests.InputFile);
-        if (!tests.UseStdOut)
-          fs::copy_file(tdir / problem / tc.Name / tests.OutputFile,
-                        workdir / tests.OutputFile);
+                      workdir / tests.InputFile,
+                      fs::copy_options::overwrite_existing);
 
         ProcessResult result = run_command({fs::canonical(*exe).string()},
                                            workdir, "", timeLimit, memoryLimit);
@@ -295,22 +369,25 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
         _LOG(plog::info, "Time ~" << result.time << " seconds");
 
         if (tests.UseStdOut) {
-          ofstream output(tdir / problem / tc.Name / tests.OutputFile);
+          ofstream output(workdir / tests.OutputFile,
+                          ios::binary | ios::trunc);
           output << result.stdout_data;
         }
       }
-      char *comments = nullptr;
-      double _points =
-          JudgeAPIFuncUTF8(fs::canonical(workdir).string().data(),
-                           (tdir / problem / tc.Name).string().data(),
-                           strdup(tests.OutputFile.data()), problem.data(),
-                           &comments) *
-          (tc.Mark == -1 ? tests.Mark : tc.Mark);
+      std::string comments;
+      double _points;
+      {
+        std::lock_guard<std::mutex> eval_lock(evaluator_mutex(evaluatorKey));
+        _points =
+            CallJudgeUTF8(judgeFn, fs::canonical(workdir).string().c_str(),
+                          (tdir / problem / tc.Name).string().c_str(),
+                          tests.OutputFile.c_str(), problem.c_str(), &comments) *
+            (tc.Mark == -1 ? tests.Mark : tc.Mark);
+      }
 
       _LOG(plog::info, "[" << user << "/" << problem << "/" << tc.Name
                            << "]: " << _points << '\n'
                            << comments);
-      free(comments);
       points += _points;
     } catch (CPError<CPErrors::TLE> &e) {
       _LOG(plog::error, "[" << user << "/" << problem << "] TLEd " << tc.Name);
@@ -326,10 +403,11 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   _LOG(plog::info, "[" << user << "/" << problem << "]: " << points);
 #undef _LOG
   out.close();
-  scores[std::make_pair(user, problem)] = std::make_pair("V", points);
+  set_score(user, problem, "V", points);
 }
 
 std::map<std::pair<string, string>, std::pair<std::string, double>>
 getScores() {
-  return scores;
+  lock_guard<mutex> lock(g_scores_mtx);
+  return g_scores;
 }

@@ -221,20 +221,30 @@ void ParseTestSettings<ParseType::TOML>(const std::string_view &sv,
       static_cast<int>(req("MemoryLimit").value<int64_t>().value());
   tc.EvaluatorName = req("EvaluatorName").value<std::string>().value();
 
-  if (auto arr = info->get("TestCase")->as_array()) {
-    for (const auto &n : *arr) {
-      auto t = n.as_table();
-      if (!t)
-        continue;
+  if (const toml::node *tc_node = info->get("TestCase")) {
+    if (auto arr = tc_node->as_array()) {
+      for (const auto &n : *arr) {
+        const auto *t = n.as_table();
+        if (!t)
+          continue;
 
-      Subtest st;
-      st.Name = t->get("Name")->value<std::string>().value();
-      st.Mark = static_cast<float>(t->get("Mark")->value<int64_t>().value());
-      st.TimeLimit =
-          static_cast<float>(t->get("TimeLimit")->value<int64_t>().value());
-      st.MemoryLimit =
-          static_cast<int>(t->get("MemoryLimit")->value<int64_t>().value());
-      tc.subtests.push_back(st);
+        // Guarded accessors: a missing key must not null-deref.
+        auto get_str = [&](const char *key) -> std::string {
+          const toml::node *kn = t->get(key);
+          return kn ? kn->value<std::string>().value_or("") : "";
+        };
+        auto get_i64 = [&](const char *key) -> int64_t {
+          const toml::node *kn = t->get(key);
+          return kn ? kn->value<int64_t>().value_or(-1) : -1;
+        };
+
+        Subtest st;
+        st.Name = get_str("Name");
+        st.Mark = static_cast<float>(get_i64("Mark"));
+        st.TimeLimit = static_cast<float>(get_i64("TimeLimit"));
+        st.MemoryLimit = static_cast<int>(get_i64("MemoryLimit"));
+        tc.subtests.push_back(std::move(st));
+      }
     }
   }
 }
@@ -374,6 +384,21 @@ void ParseGlobalOptions<ParseType::YAML>(const std::string_view &sv,
   ```*/
   YAML::Node root = YAML::Load(std::string(sv));
 
+  // Tolerant accessors: absent keys fall back to defaults instead of
+  // throwing on undefined nodes.
+  auto gs = [](const YAML::Node &n, const char *k) -> std::string {
+    const YAML::Node v = n[k];
+    return v ? v.as<std::string>() : "";
+  };
+  auto gb = [](const YAML::Node &n, const char *k, bool def) -> bool {
+    const YAML::Node v = n[k];
+    return v ? v.as<bool>() : def;
+  };
+  auto gi = [](const YAML::Node &n, const char *k, int def) -> int {
+    const YAML::Node v = n[k];
+    return v ? v.as<int>() : def;
+  };
+
   auto tc = root["ThemisConfiguration"];
   if (!tc)
     tc = root["Configuration"];
@@ -381,14 +406,15 @@ void ParseGlobalOptions<ParseType::YAML>(const std::string_view &sv,
     throw std::runtime_error("Missing ThemisConfiguration/Configuration");
   auto cc = tc["CompilerConfigurations"];
   if (cc) {
-    out.compiler.identifier = cc["Identifier"].as<std::string>();
+    out.compiler.identifier = gs(cc, "Identifier");
 
-    auto items = cc["Items"];
+    // NOTE: the key is "Item" (singular), matching the documented format.
+    auto items = cc["Item"];
     if (items && items.IsSequence()) {
       for (auto item : items) {
         CompilerItem ci;
-        ci.ext = item["ext"].as<std::string>();
-        ci.cmd = item["cmd"].as<std::string>();
+        ci.ext = gs(item, "ext");
+        ci.cmd = gs(item, "cmd");
         out.compiler.items.push_back(std::move(ci));
       }
     }
@@ -396,19 +422,18 @@ void ParseGlobalOptions<ParseType::YAML>(const std::string_view &sv,
 
   auto env = tc["Environment"];
   if (env) {
-    out.environment.identifier = env["Identifier"].as<std::string>();
-    out.environment.submitDir = env["SubmitDir"].as<std::string>();
-    out.environment.decompressDir = env["DecompressDir"].as<std::string>();
-    out.environment.activeSecurity = env["ActiveSecurity"].as<bool>();
-    out.environment.contestHouse = env["ContestHouse"].as<std::string>();
-    out.environment.adminUserName = env["AdminUserName"].as<std::string>();
-    out.environment.adminPassword = env["AdminPassword"].as<std::string>();
-    out.environment.adminDomain = env["AdminDomain"].as<std::string>();
-    out.environment.lastExamDir = env["LastExamDir"].as<std::string>();
-    out.environment.lastContestantDir =
-        env["LastContestantDir"].as<std::string>();
-    out.environment.examEditAction = env["ExamEditAction"].as<int>();
-    out.environment.toolBarVisible = env["ToolBarVisible"].as<bool>();
+    out.environment.identifier = gs(env, "Identifier");
+    out.environment.submitDir = gs(env, "SubmitDir");
+    out.environment.decompressDir = gs(env, "DecompressDir");
+    out.environment.activeSecurity = gb(env, "ActiveSecurity", false);
+    out.environment.contestHouse = gs(env, "ContestHouse");
+    out.environment.adminUserName = gs(env, "AdminUserName");
+    out.environment.adminPassword = gs(env, "AdminPassword");
+    out.environment.adminDomain = gs(env, "AdminDomain");
+    out.environment.lastExamDir = gs(env, "LastExamDir");
+    out.environment.lastContestantDir = gs(env, "LastContestantDir");
+    out.environment.examEditAction = gi(env, "ExamEditAction", 0);
+    out.environment.toolBarVisible = gb(env, "ToolBarVisible", false);
   }
 }
 
@@ -646,4 +671,54 @@ void ParseGlobalOptions<ParseType::JSON>(const std::string_view &text,
     e.examEditAction = env.value("ExamEditAction", 0);
     e.toolBarVisible = env.value("ToolBarVisible", true);
   }
+}
+
+template <typename Fn>
+static bool try_parse(const std::string_view sv, Fn fn) {
+  try {
+    fn(sv);
+    return true;
+  } catch (...) {
+  }
+  return false;
+}
+
+void parseGlobalSettingsFormat(const std::string_view sv, Configuration &tc) {
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseGlobalOptions<ParseType::YAML>(s, tc);
+      }))
+    return;
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseGlobalOptions<ParseType::JSON>(s, tc);
+      }))
+    return;
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseGlobalOptions<ParseType::XML>(s, tc);
+      }))
+    return;
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseGlobalOptions<ParseType::TOML>(s, tc);
+      }))
+    return;
+  throw std::runtime_error("File format not implemented");
+}
+
+void parseSettingsFormat(const std::string_view sv, Testcases &tc) {
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseTestSettings<ParseType::YAML>(s, tc);
+      }))
+    return;
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseTestSettings<ParseType::JSON>(s, tc);
+      }))
+    return;
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseTestSettings<ParseType::XML>(s, tc);
+      }))
+    return;
+  if (try_parse(sv, [&](std::string_view s) {
+        ParseTestSettings<ParseType::TOML>(s, tc);
+      }))
+    return;
+  throw std::runtime_error("File format not implemented");
 }

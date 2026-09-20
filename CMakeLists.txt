@@ -40,6 +40,18 @@ if (NOT TARGET ZLIB::ZLIB)
   endif()
 else()
   message(STATUS "Found ZLIB")
+  # Ensure zlib source is available for minizip (GUI needs contrib/minizip)
+  FetchContent_Declare(
+    zlib_src
+    SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/zlib-src
+    GIT_REPOSITORY "https://github.com/madler/zlib.git"
+    GIT_TAG develop
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_GetProperties(zlib_src)
+  if(NOT zlib_src_POPULATED)
+    FetchContent_Populate(zlib_src)
+  endif()
 endif()
 
 # ---- CLI11 ----
@@ -171,10 +183,20 @@ endif()
 # Targets
 # =====================
 
+# judge.c implements the C5Binary comparison; build it under both names.
+# judge.dll additionally reports diff details on mismatch; C5Binary stays
+# Themis-spec compliant (verdict only).
 add_library(judge SHARED judge.c)
+add_library(C5Binary SHARED judge.c)
+target_compile_definitions(C5Binary PRIVATE C5_STRICT)
 add_library(C1LinesWordsIgnoreCase SHARED C1LinesWordsIgnoreCase.c)
+add_library(C2LinesWordsCase SHARED C2LinesWordsCase.c)
+add_library(C3WordsIgnoreCase SHARED C3WordsIgnoreCase.c)
+add_library(C4WordsCase SHARED C4WordsCase.c)
 
-add_executable(main_judger oj_core.cpp parsers.cpp ProcessIO.cpp JudgeAPI.cpp JudgeBackend.cpp SubmissionWatcher.cpp)
+add_executable(main_judger oj_core.cpp parsers.cpp ProcessIO.cpp JudgeAPI.cpp JudgeBackend.cpp SubmissionWatcher.cpp common/AppConfig.cpp)
+
+target_include_directories(main_judger PRIVATE ${CMAKE_SOURCE_DIR})
 
 target_link_libraries(main_judger
   PRIVATE
@@ -197,12 +219,34 @@ execute_process(COMMAND uname OUTPUT_VARIABLE uname_result OUTPUT_STRIP_TRAILING
 if (uname_result MATCHES "^MSYS" OR uname_result MATCHES "^MINGW")
   target_compile_definitions(main_judger PRIVATE __MSYS__)
 endif()
+# =====================
+# Tests
+# =====================
+enable_testing()
+
+# Evaluator unit tests: link each evaluator's source directly and drive the
+# Judge() entry point against fixture files.
+foreach(ev IN ITEMS judge C1LinesWordsIgnoreCase C2LinesWordsCase
+                 C3WordsIgnoreCase C4WordsCase)
+  add_executable(test_${ev} tests/${ev}.test.c ${ev}.c)
+  add_test(NAME evaluators.${ev} COMMAND test_${ev})
+endforeach()
+
 install(TARGETS main_judger
         RUNTIME DESTINATION bin)
 
-install(TARGETS judge C1LinesWordsIgnoreCase
+install(TARGETS judge C5Binary C1LinesWordsIgnoreCase C2LinesWordsCase
+                C3WordsIgnoreCase C4WordsCase
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin)
 
 install(FILES JudgeAPI.h
         DESTINATION include/judger)
+
+# =====================
+# GUI (optional, requires Qt)
+# =====================
+option(BUILD_GUI "Build Qt GUI application" OFF)
+if(BUILD_GUI)
+  add_subdirectory(gui)
+endif()

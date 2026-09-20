@@ -1,6 +1,11 @@
 // judge.c
 // =============================================================
 //
+// Themis "C5Binary" compatible judge:
+// each result file listed in testOutputs is compared BYTE BY BYTE against the
+// same-named file produced by the contestant's program. Works for any file
+// type.
+//
 // Windows: wchar_t / UTF-16, wide APIs
 // Others : char    / UTF-8, libc
 //
@@ -20,13 +25,24 @@
 //
 // (or just pick it from CMake)
 
-#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+// Diff details are emitted only by the judge.dll build. The C5Binary target
+// compiles this file with -DC5_STRICT and stays Themis-spec compliant
+// (verdict only, no extra output).
+#ifndef C5_STRICT
+struct binary_diff {
+  long offset;         /* 0-based byte offset of first difference */
+  int expected_byte;   /* value from the test's answer file (EOF at end) */
+  int actual_byte;     /* value from the contestant's file (EOF at end) */
+  long expected_size;
+  long actual_size;
+};
+#endif
+
 #ifdef _WIN32
-#include <objbase.h>
 #include <wchar.h>
 #include <windows.h>
 #endif
@@ -46,13 +62,8 @@ typedef wchar_t str;
 
 #define STR_LIT(x) L##x
 #define str_len wcslen
-#define str_cmp wcscmp
 #define str_dup _wcsdup
-#define str_cat wcscat_s
-#define str_cpy wcscpy_s
 #define str_tok wcstok_s
-#define str_tolower towlower
-#define str_isspace iswspace
 #define str_fopen(p, m) _wfopen(p, m)
 
 #define PATH_SEP L'\\'
@@ -65,16 +76,15 @@ typedef char str;
 
 #define STR_LIT(x) x
 #define str_len strlen
-#define str_cmp strcmp
 #define str_dup strdup
-#define str_cat strcat
-#define str_cpy strcpy
 #define str_tok strtok_r
-#define str_tolower tolower
-#define str_isspace isspace
+#define str_cat_s(b, c, s)                                                                            \
+    strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
 #define str_fopen(p, m) fopen(p, m)
 
 #define PATH_SEP '/'
+
+#include <unistd.h>
 #endif
 
 // ------------------------------------------------------------
@@ -112,43 +122,17 @@ static str **str_split(const str *s, str delim) {
 }
 
 // ------------------------------------------------------------
-// Utility: trim trailing whitespace
+// Binary comparison: byte by byte
+// Returns 1 if identical, 0 if different, -1 on open error.
+// When diff is non-NULL it receives diagnostic details about the first
+// difference (used by the judge.dll build; the strict C5Binary build passes
+// NULL).
 // ------------------------------------------------------------
-static void rtrim(str *s) {
-  size_t n = str_len(s);
-  while (n && str_isspace(s[n - 1]))
-    s[--n] = 0;
-}
-
-// ------------------------------------------------------------
-// Utility: lowercase in-place
-// ------------------------------------------------------------
-static void str_lower(str *s) {
-  for (; *s; ++s)
-    *s = (str)str_tolower(*s);
-}
-
-// ------------------------------------------------------------
-// Utility: split line into words
-// ------------------------------------------------------------
-static int split_words(str *buf, str **out, int max_words) {
-  int n = 0;
-  str *ctx = NULL;
-
-  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx); tok && n < max_words;
-       tok = str_tok(NULL, STR_LIT(" \t\r\n"), &ctx)) {
-    out[n++] = tok;
-  }
-
-  return n;
-}
-
-// ------------------------------------------------------------
-// Text comparison: line-by-line, word-by-word, case-insensitive
-// ------------------------------------------------------------
-static int compare_text_files(const str *f1, const str *f2) {
-  FILE *a = str_fopen(f1, STR_LIT("r"));
-  FILE *b = str_fopen(f2, STR_LIT("r"));
+#ifndef C5_STRICT
+static int compare_binary_files_ex(const str *f1, const str *f2,
+                                   struct binary_diff *diff) {
+  FILE *a = str_fopen(f1, STR_LIT("rb"));
+  FILE *b = str_fopen(f2, STR_LIT("rb"));
 
   if (!a || !b) {
     if (a)
@@ -158,62 +142,77 @@ static int compare_text_files(const str *f1, const str *f2) {
     return -1;
   }
 
-  str la[1024], lb[1024];
+  long len1 = 0, len2 = 0;
+  if (diff) {
+    long cur = ftell(a);
+    fseek(a, 0, SEEK_END);
+    len1 = ftell(a);
+    fseek(a, cur, SEEK_SET);
 
-  for (;;) {
-#ifdef _WIN32
-    str *ra = fgetws(la, 1024, a);
-    str *rb = fgetws(lb, 1024, b);
-#else
-    str *ra = fgets(la, 1024, a);
-    str *rb = fgets(lb, 1024, b);
-#endif
-
-    if (!ra && !rb)
-      break;
-    if (!ra || !rb) {
-      fclose(a);
-      fclose(b);
-      return 0;
-    }
-
-    rtrim(la);
-    rtrim(lb);
-
-    str ca[1024], cb[1024];
-#ifdef _WIN32
-    wcscpy_s(ca, 1024, la);
-    wcscpy_s(cb, 1024, lb);
-#else
-    strcpy(ca, la);
-    strcpy(cb, lb);
-#endif
-
-    str_lower(ca);
-    str_lower(cb);
-
-    str *wa[256], *wb[256];
-    int na = split_words(ca, wa, 256);
-    int nb = split_words(cb, wb, 256);
-
-    if (na != nb) {
-      fclose(a);
-      fclose(b);
-      return 0;
-    }
-
-    for (int i = 0; i < na; ++i)
-      if (str_cmp(wa[i], wb[i]) != 0) {
-        fclose(a);
-        fclose(b);
-        return 0;
-      }
+    cur = ftell(b);
+    fseek(b, 0, SEEK_END);
+    len2 = ftell(b);
+    fseek(b, cur, SEEK_SET);
   }
+
+  int ca, cb;
+  long offset = 0;
+  do {
+    ca = fgetc(a);
+    cb = fgetc(b);
+    if (ca != cb)
+      break;
+    ++offset;
+  } while (ca != EOF && cb != EOF);
 
   fclose(a);
   fclose(b);
-  return 1;
+
+  if (ca == cb) {
+    /* Both hit EOF on the same step => identical */
+    return 1;
+  }
+
+  if (diff) {
+    diff->offset = offset;
+    diff->expected_byte = ca;
+    diff->actual_byte = cb;
+    diff->expected_size = len1;
+    diff->actual_size = len2;
+  }
+  return 0;
 }
+
+static int compare_binary_files(const str *f1, const str *f2) {
+  return compare_binary_files_ex(f1, f2, NULL);
+}
+#else
+/* Strict Themis C5Binary: verdict only */
+static int compare_binary_files(const str *f1, const str *f2) {
+  FILE *a = str_fopen(f1, STR_LIT("rb"));
+  FILE *b = str_fopen(f2, STR_LIT("rb"));
+
+  if (!a || !b) {
+    if (a)
+      fclose(a);
+    if (b)
+      fclose(b);
+    return -1;
+  }
+
+  int ca, cb;
+  do {
+    ca = fgetc(a);
+    cb = fgetc(b);
+  } while (ca != EOF && cb != EOF && ca == cb);
+
+  fclose(a);
+  fclose(b);
+
+  /* Both hit EOF on the same step => identical */
+  return ca == cb ? 1 : 0;
+}
+#endif /* C5_STRICT */
 
 // ------------------------------------------------------------
 // Path join
@@ -242,6 +241,61 @@ static int join_path(str *out, size_t cap, const str *dir, const str *file) {
 #endif
   return 1;
 }
+
+// ------------------------------------------------------------
+// File existence check
+// ------------------------------------------------------------
+static int file_exists(const str *path) {
+#ifdef _WIN32
+  DWORD attrs = GetFileAttributesW(path);
+  return attrs != INVALID_FILE_ATTRIBUTES &&
+         !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+#else
+  return access(path, F_OK) == 0;
+#endif
+}
+
+#ifndef C5_STRICT
+// Append an ASCII string to the (wide or narrow) comment buffer.
+static void cat_ascii(str *comments, size_t cap, const char *s) {
+#ifdef _WIN32
+  size_t n = strlen(s);
+  wchar_t *tmp = (wchar_t *)malloc((n + 1) * sizeof(wchar_t));
+  if (!tmp)
+    return;
+  if (mbstowcs(tmp, s, n + 1) != (size_t)-1)
+    wcscat_s(comments, cap, tmp);
+  free(tmp);
+#else
+  strncat(comments, s, cap - strlen(comments) - 1);
+#endif
+}
+
+static void format_byte(char *out, size_t cap, int v) {
+  if (v == EOF)
+    snprintf(out, cap, "EOF");
+  else
+    snprintf(out, cap, "0x%02X", (unsigned)v);
+}
+
+static void append_diff_details(str *comments, size_t cap,
+                                const struct binary_diff *d) {
+  char line[192];
+  if (d->expected_size != d->actual_size) {
+    snprintf(line, sizeof(line),
+             "  size mismatch: expected %ld bytes, actual %ld bytes\n",
+             d->expected_size, d->actual_size);
+    cat_ascii(comments, cap, line);
+  }
+  char eb[16], ab[16];
+  format_byte(eb, sizeof(eb), d->expected_byte);
+  format_byte(ab, sizeof(ab), d->actual_byte);
+  snprintf(line, sizeof(line),
+           "  first difference at byte offset %ld: expected %s, actual %s\n",
+           d->offset, eb, ab);
+  cat_ascii(comments, cap, line);
+}
+#endif /* !C5_STRICT */
 
 // ------------------------------------------------------------
 // Exported entry
@@ -276,34 +330,56 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
       continue;
     }
 
-    int cmp = compare_text_files(exp, act);
-
 #ifdef _WIN32
     wcscat_s(comments, BUF_CCH, files[i]);
     wcscat_s(comments, BUF_CCH, STR_LIT(": "));
 #else
-    strcat(comments, files[i]);
-    strcat(comments, ": ");
+    str_cat_s(comments, BUF_CCH, files[i]);
+    str_cat_s(comments, BUF_CCH, ": ");
+#endif
+
+    if (!file_exists(act)) {
+      /* Contestant produced no result file */
+#ifdef _WIN32
+      wcscat_s(comments, BUF_CCH,
+               STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n"));
+#else
+      str_cat_s(comments, BUF_CCH,
+                "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y "
+                "k\xE1\xBA\xBFt qu\x1EA3\n");
+#endif
+      free(files[i]);
+      continue;
+    }
+
+#ifndef C5_STRICT
+    struct binary_diff diff_info;
+    int cmp = compare_binary_files_ex(exp, act, &diff_info);
+#else
+    int cmp = compare_binary_files(exp, act);
 #endif
 
     if (cmp == 1) {
 #ifdef _WIN32
       wcscat_s(comments, BUF_CCH, STR_LIT("PASSED\n"));
 #else
-      strcat(comments, "PASSED\n");
+      str_cat_s(comments, BUF_CCH, "PASSED\n");
 #endif
       score += 1.0;
     } else if (cmp == 0) {
 #ifdef _WIN32
       wcscat_s(comments, BUF_CCH, STR_LIT("FAILED\n"));
 #else
-      strcat(comments, "FAILED\n");
+      str_cat_s(comments, BUF_CCH, "FAILED\n");
+#endif
+#ifndef C5_STRICT
+      append_diff_details(comments, BUF_CCH, &diff_info);
 #endif
     } else {
 #ifdef _WIN32
       wcscat_s(comments, BUF_CCH, STR_LIT("ERROR\n"));
 #else
-      strcat(comments, "ERROR\n");
+      str_cat_s(comments, BUF_CCH, "ERROR\n");
 #endif
     }
 

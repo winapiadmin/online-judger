@@ -1,6 +1,14 @@
 // C1LinesWordsIgnoreCase.c
 // =============================================================
 //
+// Themis "C1LinesWordsIgnoreCase" judge:
+// files match when they have the same lines in the same order, and each line
+// contains the same words in the same order. Word separators are tab (9) and
+// space (32). Word matching is CASE-INSENSITIVE. Trailing blank lines and
+// redundant separators at line ends do not matter; a leading blank line does.
+// Intended for ASCII text files. Missing contestant result files are reported
+// as "Khong tim thay ket qua".
+//
 // Windows: wchar_t / UTF-16
 // Others : char / UTF-8
 //
@@ -59,7 +67,6 @@ typedef char str;
 #define str_len wcslen
 #define str_dup _wcsdup
 #define str_cmp wcscmp
-#define str_cat wcscat
 #define str_cat_s wcscat_s
 #define str_cpy_s wcscpy_s
 #define str_tok wcstok_s
@@ -70,24 +77,15 @@ typedef char str;
 #define str_len strlen
 #define str_dup strdup
 #define str_cmp strcmp
+#define str_cat_s(b, c, s)                                                                            \
+    strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
+#define str_cpy_s(d, c, s) strncpy(d, s, c)
+#define str_tok strtok_r
 #define str_tolower tolower
 #define str_space isspace
 #define str_fopen(p, m) fopen(p, m)
 
-static void str_cpy_s(str *d, size_t c, const str *s) {
-  if (!d || !s || c == 0)
-    return;
-  strncpy(d, s, c - 1);
-  d[c - 1] = 0;
-}
-
-static void str_cat_s(str *b, size_t c, const str *s) {
-  size_t len = strlen(b);
-  if (len < c - 1)
-    strncat(b, s, c - len - 1);
-}
-
-#define str_tok strtok_r
+#include <unistd.h>
 #endif
 
 // ------------------------------------------------------------
@@ -98,13 +96,16 @@ static str **str_split(const str *s, str delim) {
     return NULL;
 
   str *tmp = str_dup(s);
+  if (!tmp)
+    return NULL;
+
   int count = 1;
 
   for (str *p = tmp; *p; ++p)
     if (*p == delim)
       count++;
 
-  str **out = (str **)calloc((size_t)count + 1, sizeof(str *));
+  str **out = calloc((size_t)count + 1, sizeof(str *));
   if (!out) {
     free(tmp);
     return NULL;
@@ -131,25 +132,33 @@ static void rtrim(str *s) {
 }
 
 // ------------------------------------------------------------
-// Lowercase
+// Compare one line's word list against the other's (case-insensitive).
+// Both lines are tokenized in place, so they must be private mutable
+// buffers. Words are compared as they are tokenized: no limit on how many
+// words a line may contain.
+// Returns 1 if equal, 0 if not.
 // ------------------------------------------------------------
-static void str_lower(str *s) {
-  for (; *s; ++s)
-    *s = (str)str_tolower(*s);
-}
+static int line_words_equal(str *la, str *lb) {
+  static const str seps[] = STR_LIT(" \t");
 
-// ------------------------------------------------------------
-// Split line into words
-// ------------------------------------------------------------
-static int split_words(str *buf, str **out, int max) {
-  int n = 0;
-  str *ctx = NULL;
+  for (str *p = la; *p; ++p)
+    *p = (str)str_tolower(*p);
+  for (str *p = lb; *p; ++p)
+    *p = (str)str_tolower(*p);
 
-  for (str *tok = str_tok(buf, STR_LIT(" \t\r\n"), &ctx); tok && n < max;
-       tok = str_tok(NULL, STR_LIT(" \t\r\n"), &ctx))
-    out[n++] = tok;
+  str *ctxa = NULL, *ctxb = NULL;
+  str *ta = str_tok(la, seps, &ctxa);
+  str *tb = str_tok(lb, seps, &ctxb);
 
-  return n;
+  while (ta && tb) {
+    if (str_cmp(ta, tb) != 0)
+      return 0;
+    ta = str_tok(NULL, seps, &ctxa);
+    tb = str_tok(NULL, seps, &ctxb);
+  }
+
+  /* equal only when both lines ran out of words together */
+  return ta == NULL && tb == NULL;
 }
 
 // ------------------------------------------------------------
@@ -168,39 +177,66 @@ static void skip_bom(FILE *f) {
 }
 
 // ------------------------------------------------------------
-// Read next word (ASCII safe)
+// Read one line of arbitrary length (buffer grows as needed), trimmed of
+// trailing whitespace. Returns a malloc'd line, or NULL at EOF.
+// Sets *ok to 0 on allocation failure (caller treats this as an error).
+// The caller owns and must free the returned buffer.
 // ------------------------------------------------------------
-static int next_word(FILE *f, char *buf, int cap) {
-  int c;
+static str *read_line(FILE *f, int *ok) {
+  size_t cap = 256, len = 0;
+  *ok = 1;
 
-  /* skip whitespace */
-  do {
-    c = fgetc(f);
-    if (c == EOF)
-      return 0;
-  } while (isspace((unsigned char)c));
-
-  int i = 0;
-
-  /* read word */
-  while (c != EOF && !isspace((unsigned char)c)) {
-
-    if (i < cap - 1)
-      buf[i++] = (char)tolower((unsigned char)c);
-
-    c = fgetc(f);
+  str *buf = (str *)malloc(cap * sizeof(str));
+  if (!buf) {
+    *ok = 0;
+    return NULL;
   }
 
-  buf[i] = 0;
-  return 1;
+  for (;;) {
+#ifdef _WIN32
+    if (!fgetws(buf + len, (int)(cap - len), f))
+      break; /* EOF */
+#else
+    if (!fgets(buf + len, (int)(cap - len), f))
+      break; /* EOF */
+#endif
+    len += str_len(buf + len);
+
+    if (len > 0 && buf[len - 1] == STR_LIT('\n'))
+      break; /* complete line */
+
+    if (len + 1 < cap)
+      break; /* partial content then EOF */
+
+    /* buffer filled without reaching end of line: grow and continue */
+    cap *= 2;
+    str *nb = (str *)realloc(buf, cap * sizeof(str));
+    if (!nb) {
+      free(buf);
+      *ok = 0;
+      return NULL;
+    }
+    buf = nb;
+  }
+
+  if (len == 0 && feof(f)) {
+    free(buf);
+    return NULL;
+  }
+
+  rtrim(buf);
+  return buf;
 }
 
 // ------------------------------------------------------------
-// Compare text files
+// Line-by-line comparison with unbounded line lengths.
+// Trailing blank lines on either side are ignored; anything else must match
+// positionally.
+// Returns 1 if equal, 0 if different, -1 on open error / allocation failure.
 // ------------------------------------------------------------
 static int compare_text_files(const str *f1, const str *f2) {
-  FILE *a = str_fopen(f1, STR_LIT("rb"));
-  FILE *b = str_fopen(f2, STR_LIT("rb"));
+  FILE *a = str_fopen(f1, STR_LIT("r"));
+  FILE *b = str_fopen(f2, STR_LIT("r"));
 
   if (!a || !b) {
     if (a)
@@ -213,27 +249,62 @@ static int compare_text_files(const str *f1, const str *f2) {
   skip_bom(a);
   skip_bom(b);
 
-  char wa[4096];
-  char wb[4096];
+  int ea = 0, eb = 0;
+  int result = 1;
+  str *la = NULL, *lb = NULL;
 
-  while (1) {
-
-    int ha = next_word(a, wa, sizeof(wa));
-    int hb = next_word(b, wb, sizeof(wb));
-
-    if (!ha && !hb)
+  while (result == 1) {
+    if (!ea) {
+      int ok;
+      la = read_line(a, &ok);
+      if (!ok)
+        result = -1;
+      else if (!la)
+        ea = 1;
+    }
+    if (result == 1 && !eb) {
+      int ok;
+      lb = read_line(b, &ok);
+      if (!ok)
+        result = -1;
+      else if (!lb)
+        eb = 1;
+    }
+    if (result != 1)
       break;
 
-    if (ha != hb || strcmp(wa, wb) != 0) {
-      fclose(a);
-      fclose(b);
-      return 0;
+    if (ea && eb)
+      break;
+
+    if (ea) {
+      /* a finished: b may only have blank lines left */
+      if (lb[0] != 0)
+        result = 0;
+      free(lb);
+      lb = NULL;
+      continue;
     }
+    if (eb) {
+      if (la[0] != 0)
+        result = 0;
+      free(la);
+      la = NULL;
+      continue;
+    }
+
+    if (!line_words_equal(la, lb))
+      result = 0;
+
+    free(la);
+    free(lb);
+    la = lb = NULL;
   }
 
+  free(la);
+  free(lb);
   fclose(a);
   fclose(b);
-  return 1;
+  return result;
 }
 
 // ------------------------------------------------------------
@@ -257,6 +328,19 @@ static int join_path(str *out, size_t cap, const str *dir, const str *file) {
   str_cat_s(out, cap, file);
 
   return 1;
+}
+
+// ------------------------------------------------------------
+// File existence check
+// ------------------------------------------------------------
+static int file_exists(const str *path) {
+#ifdef _WIN32
+  DWORD attrs = GetFileAttributesW(path);
+  return attrs != INVALID_FILE_ATTRIBUTES &&
+         !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+#else
+  return access(path, F_OK) == 0;
+#endif
 }
 
 // ------------------------------------------------------------
@@ -292,6 +376,14 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 
     if (join_path(exp, 1024, testsDir, files[i]) &&
         join_path(act, 1024, contestantsDir, files[i])) {
+
+      if (!file_exists(act)) {
+        /* Contestant produced no result file */
+        str_cat_s(comments, BUF,
+                  STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n"));
+        free(files[i]);
+        continue;
+      }
 
       int v = compare_text_files(exp, act);
 

@@ -18,6 +18,7 @@
 #include <plog/Log.h>
 #include <signal.h>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -27,6 +28,7 @@ std::function<void()> fn;
 #include "JudgeBackend.h"
 #include "Parsers.h"
 #include "SubmissionWatcher.h"
+#include "common/AppConfig.h"
 using namespace std;
 namespace fs = filesystem;
 plog::ColorConsoleAppender<plog::TxtFormatter> appender;
@@ -36,11 +38,10 @@ BOOL WINAPI SignalHandler(DWORD) {
   return TRUE;
 }
 #else
+static volatile sig_atomic_t g_sigint_flag = 0;
 void SignalHandler(int v) {
-  if (v == SIGINT) {
-    fn();
-    exit(0);
-  }
+  if (v == SIGINT)
+    g_sigint_flag = 1; /* async-signal-safe: set a flag only */
 }
 #endif
 void termination() {
@@ -62,60 +63,40 @@ void termination() {
   exit(-1);
 }
 
-void parseGlobalSettingsFormat(const std::string_view sv, Configuration &tc) {
-  try {
-    ParseGlobalOptions<ParseType::YAML>(sv, tc);
-    PLOGI << "parsed as YAML (success)";
-    return;
-  } catch (...) {
+static std::string load_maybe_zlib(const fs::path &p) {
+  std::ifstream binary(p, ios::in | ios::binary);
+  if (!binary.is_open())
+    throw std::runtime_error("Failed to open file: " + p.string());
+
+  std::vector<char> data((std::istreambuf_iterator<char>(binary)),
+                         std::istreambuf_iterator<char>());
+  constexpr size_t kMaxRaw = 1 << 24;
+  constexpr size_t kMaxInflated = 128 << 20;
+  if (data.size() > kMaxRaw)
+    throw std::runtime_error("Possibly crafted input; re-check config");
+  if (data.empty())
+    return {};
+
+  uLongf destSize = compressBound((uLong)data.size());
+  std::vector<char> processed(destSize);
+
+  int rc;
+  while ((rc = uncompress((Bytef *)processed.data(), &destSize,
+                          (const Bytef *)data.data(), (uLong)data.size())) ==
+         Z_BUF_ERROR) {
+    if (processed.size() >= kMaxInflated)
+      throw std::runtime_error("Decompressed size exceeds limit (zip bomb?)");
+    destSize = processed.size() * 2;
+    processed.resize(destSize);
   }
-  try {
-    ParseGlobalOptions<ParseType::JSON>(sv, tc);
-    PLOGI << "parsed as JSON (success)";
-    return;
-  } catch (...) {
+  if (rc == Z_OK) {
+    PLOGD << p.string() << " is ZLIB compressed";
+    return std::string(processed.data(), destSize);
   }
-  try {
-    ParseGlobalOptions<ParseType::XML>(sv, tc);
-    PLOGI << "parsed as XML (success)";
-    return;
-  } catch (...) {
-  }
-  try {
-    ParseGlobalOptions<ParseType::TOML>(sv, tc);
-    PLOGI << "parsed as TOML (success)";
-    return;
-  } catch (...) {
-  }
-  throw std::runtime_error("File format not implemented");
+  PLOGD << p.string() << " is not ZLIB compressed, error=" << rc;
+  return std::string(data.data(), data.size());
 }
-void parseSettingsFormat(const std::string_view sv, Testcases &tc) {
-  try {
-    ParseTestSettings<ParseType::YAML>(sv, tc);
-    PLOGI << "Problem: " << tc.Name << " parsed as YAML (success)";
-    return;
-  } catch (...) {
-  }
-  try {
-    ParseTestSettings<ParseType::JSON>(sv, tc);
-    PLOGI << "Problem: " << tc.Name << " parsed as JSON (success)";
-    return;
-  } catch (...) {
-  }
-  try {
-    ParseTestSettings<ParseType::XML>(sv, tc);
-    PLOGI << "Problem: " << tc.Name << " parsed as XML (success)";
-    return;
-  } catch (...) {
-  }
-  try {
-    ParseTestSettings<ParseType::TOML>(sv, tc);
-    PLOGI << "Problem: " << tc.Name << " parsed as TOML (success)";
-    return;
-  } catch (...) {
-  }
-  throw std::runtime_error("File format not implemented");
-}
+
 int main(int argc, char **argv) {
 #ifdef _WIN32
   // Set output code page to UTF-8
@@ -125,6 +106,7 @@ int main(int argc, char **argv) {
   plog::init(plog::verbose, &appender);
   fs::path subdir, tdir, compfile, judgers = "judgers";
   bool waitSubmittorMode = false;
+  int jobs = 0; // 0 = auto (hardware concurrency)
   CLI::App app{"competitive programming judger"};
   argv = app.ensure_utf8(argv);
 
@@ -149,6 +131,8 @@ int main(int argc, char **argv) {
   auto *mode = app.add_option_group("Mode");
   mode->add_flag("-w,--wait-submittor-mode", waitSubmittorMode,
                  "Wait for new submissions instead of exiting");
+  mode->add_option("-n,--jobs", jobs, "Parallel judge threads (0 = auto)")
+      ->check(CLI::NonNegativeNumber);
 
   app.get_formatter()->column_width(32);
   try {
@@ -163,49 +147,15 @@ int main(int argc, char **argv) {
   if (!compfile.empty())
     compfile = fs::canonical(compfile);
 
-  Configuration globalInfo;
+  AppConfig appConfig;
+  Configuration &globalInfo = appConfig.configuration();
   if (!compfile.empty()) {
-    std::fstream binary(compfile.string(), ios::in | ios::binary);
-    binary.seekg(0, ios::end);
-    size_t size = binary.tellg();
-    binary.seekg(0, ios::beg);
-    if (size > (1 << 24)) // 16MiB of testcases even if uncompressed?
-    {
-      throw std::runtime_error("Is this excessive for compiler info? Possibly "
-                               "specifically crafted input.");
-    }
-    std::vector<char> data(size);
-
-    binary.read(data.data(), size);
-    uLongf destSize = size * 1032; // starting guess
-    std::vector<char> processed(destSize);
-
-    int rc;
-    while ((rc = uncompress((Bytef *)processed.data(), &destSize,
-                            (const Bytef *)data.data(), size)) == Z_BUF_ERROR) {
-      destSize *= 2;
-      processed.resize(destSize);
-    }
-    if (rc == Z_OK) {
-      PLOGD << compfile.string() << " is ZLIB compressed";
-      parseGlobalSettingsFormat(std::string_view(processed.data(), destSize),
-                                globalInfo);
-    } else {
-      PLOGD << compfile.string() << " is not ZLIB compressed, error=" << rc;
-      parseGlobalSettingsFormat(std::string_view(data.data(), data.size()),
-                                globalInfo);
-    }
+    // -c flag: full format detection (YAML/JSON/XML/TOML) via parsers
+    std::string content = load_maybe_zlib(compfile);
+    parseGlobalSettingsFormat(content, globalInfo);
   } else {
-    PLOGD << "Using default options";
-#if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
-    parseGlobalSettingsFormat(
-        R"(<ThemisConfiguration><CompilerConfigurations Identifier="THEMISCompiler"><Item ext=".cpp" cmd="g++ -std=c++14 &quot;%NAME%%EXT%&quot; -pipe -O2 -s -static -lm -x c++ -o&quot;%NAME%.exe&quot;|@WorkDir=%PATH%"/><Item ext=".c" cmd="gcc -std=c11 &quot;%NAME%%EXT%&quot; -pipe -O2 -s -static -lm -x c -o&quot;%NAME%.exe&quot;|@WorkDir=%PATH%" /><Item ext=".pas" cmd="fpc -o&quot;%NAME%.exe&quot; -O2 -XS -Sg &quot;%NAME%%EXT%&quot;|@WorkDir=%PATH%" /><Item ext=".pp" cmd="fpc -o&quot;%NAME%.exe&quot; -O2 -XS -Sg &quot;%NAME%%EXT%&quot;|@WorkDir=%PATH%" /><Item ext=".java" cmd="&quot;javac&quot; &quot;%NAME%%EXT%&quot;|@WorkDir=%PATH%" /><Item ext=".exe" cmd=";Nếu không muốn dịch lại khi đã có file .exe, chuyển loại file này lên đầu" /><Item ext=".class" cmd=";Nếu không muốn dịch lại khi đã có file .class, chuyển loại file này lên đầu" /><Item ext=".py" cmd=";Mã nguồn Python được thông dịch!" /></CompilerConfigurations><Environment Identifier="THEMISEnvironment" SubmitDir="" DecompressDir="C:\ProgramData\" ActiveSecurity="false" ContestHouse="/tmp" AdminUserName="" AdminPassword="" AdminDomain="WINDOWS" LastExamDir="" LastContestantDir="" ExamEditAction="0" ToolBarVisible="true"/></ThemisConfiguration>)"sv,
-        globalInfo);
-#else
-    parseGlobalSettingsFormat(
-        R"(<ThemisConfiguration><CompilerConfigurations Identifier="THEMISCompiler"><Item ext=".cpp" cmd="g++ -std=c++14 &quot;%NAME%%EXT%&quot; -pipe -O2 -s -static -lm -x c++ -o&quot;%NAME%.exe&quot; -Wl,--stack,66060288|@WorkDir=%PATH%"/><Item ext=".c" cmd="gcc -std=c11 &quot;%NAME%%EXT%&quot; -pipe -O2 -s -static -lm -x c -o&quot;%NAME%.exe&quot; -Wl,--stack,66060288|@WorkDir=%PATH%" /><Item ext=".pas" cmd="fpc -o&quot;%NAME%.exe&quot; -O2 -XS -Sg -Cs66060288 &quot;%NAME%%EXT%&quot;|@WorkDir=%PATH%" /><Item ext=".pp" cmd="fpc -o&quot;%NAME%.exe&quot; -O2 -XS -Sg -Cs66060288 &quot;%NAME%%EXT%&quot;|@WorkDir=%PATH%" /><Item ext=".java" cmd="&quot;javac&quot; &quot;%NAME%%EXT%&quot;|@WorkDir=%PATH%" /><Item ext=".exe" cmd=";Nếu không muốn dịch lại khi đã có file .exe, chuyển loại file này lên đầu" /><Item ext=".class" cmd=";Nếu không muốn dịch lại khi đã có file .class, chuyển loại file này lên đầu" /><Item ext=".py" cmd=";Mã nguồn Python được thông dịch!" /></CompilerConfigurations><Environment Identifier="THEMISEnvironment" SubmitDir="" DecompressDir="C:\ProgramData\" ActiveSecurity="false" ContestHouse="C:\ProgramData\" AdminUserName="" AdminPassword="" AdminDomain="WINDOWS" LastExamDir="" LastContestantDir="" ExamEditAction="0" ToolBarVisible="true"/></ThemisConfiguration>)"sv,
-        globalInfo);
-#endif
+    // No -c flag: use AppConfig (Themis XML → our JSON → defaults)
+    appConfig.load();
   }
   // discover TCs
   unordered_map<string, Testcases> testcases;
@@ -216,36 +166,8 @@ int main(int argc, char **argv) {
     auto settings_path = fd.path() / "Settings.cfg";
     string inpf = name + ".INP", outf = name + ".OUT";
     if (fs::exists(settings_path)) {
-      std::fstream binary(settings_path.string(), ios::in | ios::binary);
-      binary.seekg(0, ios::end);
-      size_t size = binary.tellg();
-      binary.seekg(0, ios::beg);
-      if (size > (1 << 24)) // 16MiB of testcases even if uncompressed?
-        throw std::runtime_error(
-            "Is this excessive for test cases? Possibly specifically crafted "
-            "input. please re-check config");
-      std::vector<char> data(size);
-      binary.read(data.data(), size);
-      uLongf destSize = size * 1032; // starting guess
-      std::vector<char> processed(destSize);
-
-      int rc;
-      while ((rc = uncompress((Bytef *)processed.data(), &destSize,
-                              (const Bytef *)data.data(), size)) ==
-             Z_BUF_ERROR) {
-        destSize *= 2;
-        processed.resize(destSize);
-      }
-      if (rc == Z_OK) {
-        PLOGD << settings_path.string() << " is ZLIB compressed";
-        parseSettingsFormat(std::string_view(processed.data(), destSize),
-                            testcases[name]);
-      } else {
-        PLOGD << settings_path.string()
-              << " is not ZLIB compressed, error=" << rc;
-        parseSettingsFormat(std::string_view(data.data(), data.size()),
-                            testcases[name]);
-      }
+      std::string content = load_maybe_zlib(settings_path);
+      parseSettingsFormat(content, testcases[name]);
       fs::path f = testcases[name].EvaluatorName;
       f.replace_filename(
 #if defined(__unix__) || defined(__linux__) || defined(__APPLE__) ||           \
@@ -288,14 +210,62 @@ int main(int argc, char **argv) {
       }
     }
   }
+  // Collect (user, problem) jobs, then judge them on a worker pool
+  struct Job {
+    std::string user;
+    std::string problem;
+  };
+  std::vector<Job> jobList;
   for (auto &user : fs::directory_iterator(subdir)) {
     if (!user.is_directory())
       continue;
-    for (auto &problem : testcases) {
-      judge(subdir, tdir, problem.first, user.path().stem().string(),
-            globalInfo, testcases, judgers);
-    }
+    if (user.path().filename() == "$History")
+      continue;
+    for (auto &problem : testcases)
+      jobList.push_back({user.path().stem().string(), problem.first});
   }
+
+  unsigned maxThreads = jobs < 0 ? 0 : (unsigned)jobs;
+  if (maxThreads == 0) {
+    maxThreads = std::thread::hardware_concurrency();
+    if (maxThreads == 0)
+      maxThreads = 1;
+  }
+  size_t threadCount =
+      std::min<size_t>(maxThreads, std::max<size_t>(jobList.size(), 1));
+
+  PLOGI << "Judging " << jobList.size() << " submission(s) with " << threadCount
+        << " thread(s)";
+
+  std::atomic<size_t> nextJob{0};
+  auto worker = [&]() -> void {
+    for (;;) {
+      size_t i = nextJob++;
+      if (i >= jobList.size())
+        return;
+      const auto &[u, p] = jobList[i];
+      try {
+        judge(subdir, tdir, p, u, globalInfo, testcases, judgers);
+      } catch (const std::exception &e) {
+        PLOGE << "judge(" << u << "/" << p << ") crashed: " << e.what();
+      } catch (...) {
+        PLOGE << "judge(" << u << "/" << p << ") crashed: unknown exception";
+      }
+    }
+  };
+  std::vector<std::thread> pool;
+  pool.reserve(threadCount);
+  try {
+    for (size_t i = 0; i < threadCount; ++i)
+      pool.emplace_back(worker);
+  } catch (...) {
+    for (auto &t : pool)
+      if (t.joinable())
+        t.join();
+    throw;
+  }
+  for (auto &t : pool)
+    t.join();
   auto print_stats = [&]() {
     auto scores = getScores();
 
@@ -399,9 +369,16 @@ int main(int argc, char **argv) {
     fn = []() {};
     print_stats();
     auto callback_judge = [&](fs::path path) -> void {
-      judge(subdir, tdir, path.filename().stem().string(),
-            path.parent_path().filename().string(), globalInfo, testcases,
-            judgers);
+      // An escaping exception here would terminate the whole judger process.
+      try {
+        judge(subdir, tdir, path.filename().stem().string(),
+              path.parent_path().filename().string(), globalInfo, testcases,
+              judgers);
+      } catch (const std::exception &e) {
+        PLOGE << "judge(" << path.string() << ") crashed: " << e.what();
+      } catch (...) {
+        PLOGE << "judge(" << path.string() << ") crashed: unknown exception";
+      }
       print_stats();
     };
     SubmissionWatcher watcher(subdir, callback_judge);
@@ -412,16 +389,19 @@ int main(int argc, char **argv) {
     if (!SetConsoleCtrlHandler((PHANDLER_ROUTINE)SignalHandler, TRUE)) {
       PLOGD << "Failed to set handler";
     }
+    watcher.wait();
 #else
     struct sigaction sa;
-    fn = [&]() { watcher.stop(); };
     sa.sa_handler = SignalHandler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;
     if (sigaction(SIGINT, &sa, nullptr) == -1) {
       PLOGD << "Failed to set handler";
     }
+    /* The handler only sets a flag; stop() runs on this thread. */
+    while (!g_sigint_flag)
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    watcher.stop();
 #endif
-    watcher.wait();
   }
 }

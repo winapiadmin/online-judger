@@ -1,5 +1,7 @@
 #include "SubmissionWatcher.h"
 
+#include "Base.h"
+
 #include <efsw/efsw.hpp>
 
 #include <atomic>
@@ -62,12 +64,12 @@ public:
 
   void handleFileAction(efsw::WatchID, const std::string &dir,
                         const std::string &filename, efsw::Action action,
-                        std::string) override {
+                        const std::string & /*oldFilename*/) override {
     if (action != efsw::Actions::Add && action != efsw::Actions::Modified)
       return;
 
     fs::path p = fs::path(dir) / filename;
-    if (p.extension() != ".cpp")
+    if (!iequals(p.extension().string(), ".cpp"))
       return;
 
     // debounce

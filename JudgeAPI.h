@@ -1,32 +1,35 @@
 #pragma once
+#include <string>
 #if defined(_WIN32) && !defined(_WIN64)
 #define STDCALL __stdcall
 #else
 #define STDCALL
 #endif
-// [0.0, 1.0]
-// 0.0 means no points and 1.0 means full points
-// in (0.0, 1.0): scaled
-extern "C" double STDCALL JudgeAPIFunc(
-    wchar_t *contestantsDir,
-    wchar_t *testsDir,    // __In__
-    wchar_t *testOutputs, // __In__
-    wchar_t *testName,    // __In__
-    wchar_t **comments    // __Out__, __Freed_by_callee__
-);
-// always UTF-8
-extern "C" double STDCALL JudgeAPIFuncUTF8(
-    char *contestantsDir,
-    char *testsDir,    // __In__
-    char *testOutputs, // __In__
-    char *testName,    // __In__
-    char **comments    // __Out__, __Freed_by_callee__
-); // will be a port to the non-utf8 version on windows or a stub for _judge
-using JudgeFn =
+// Judge DLL ABI (Themis-compatible):
+//   double __stdcall Judge(wchar_t *a, wchar_t *b, wchar_t *c, wchar_t *d,
+//                          wchar_t **e);
+// a: contestant working dir for one test
+// b: test data dir
+// c: '|' separated list of result files
+// d: problem name
+// e: [out] NUL-terminated comment string allocated by the judge DLL
+// return: score in [0.0, 1.0]
 #ifdef _WIN32
-    decltype(&JudgeAPIFunc);
+using JudgeFn = double(STDCALL *)(wchar_t *, wchar_t *, wchar_t *, wchar_t *,
+                                  wchar_t **);
 #else
-    decltype(&JudgeAPIFuncUTF8);
+using JudgeFn = double (*)(char *, char *, char *, char *, char **);
 #endif
-inline JudgeFn _judge = nullptr;
-void Load(const char *path);
+
+// Loads (and caches) a judge library. Thread-safe; repeated calls with the
+// same path return the cached function without reloading.
+// Throws std::runtime_error on failure.
+JudgeFn Load(const char *path);
+
+// UTF-8 convenience wrapper around a loaded Judge function.
+// Converts inputs to wchar_t on Windows, converts the comment output back to
+// UTF-8. The comment buffer is owned by the judge DLL; callers must not free
+// it. comments may be nullptr.
+double STDCALL CallJudgeUTF8(JudgeFn fn, const char *contestantsDir,
+                             const char *testsDir, const char *testOutputs,
+                             const char *testName, std::string *comments);

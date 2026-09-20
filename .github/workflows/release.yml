@@ -29,11 +29,45 @@ jobs:
         if: matrix.os == 'windows-latest'
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Install Qt6 (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qt6-base-dev libgl1-mesa-dev
+
+      - name: Install Qt6 (Windows)
+        if: runner.os == 'Windows'
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.7.*'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI=ON
 
       - name: Build
         run: cmake --build build
+
+      - name: Unit tests (evaluators)
+        working-directory: build
+        run: ctest --output-on-failure
+
+      - name: End-to-end test
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # MinGW g++ is used as the contestant compiler in the e2e config
+            for d in /c/mingw64/bin /c/msys64/mingw64/bin /c/Strawberry/c/bin; do
+              [ -x "$d/g++.exe" ] && export PATH="$d:$PATH" && break
+            done
+            BIN=build/main_judger.exe
+          else
+            BIN=build/main_judger
+          fi
+          g++ --version | head -n 1
+          bash tests/e2e_test.sh "$BIN" build
 
       - name: Install
         run: cmake --install build --prefix publish --config Debug
