@@ -50,10 +50,10 @@ int main(void) {
   remove_actual();
   run("anything", 8, NULL, 0, &s, c, sizeof(c));
   CHECK(s == 0.0, "missing result file scores 0");
-   CHECK(strstr(c, "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y") != NULL,
-         "missing-file Vietnamese verdict missing");
-   CHECK(strstr(c, "k\xE1\xBA\xBFt qu\xE1\xBA\xA3") != NULL,
-         "missing-file Vietnamese verdict (full) missing");
+  CHECK(strstr(c, "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y") != NULL,
+        "missing-file Vietnamese verdict missing");
+  CHECK(strstr(c, "k\xE1\xBA\xBFt qu\xE1\xBA\xA3") != NULL,
+        "missing-file Vietnamese verdict (full) missing");
 
   remove_tree_best_effort(g_base);
   printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED",

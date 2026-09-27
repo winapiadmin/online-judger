@@ -341,33 +341,36 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
     return 0.0;
   }
 
-   double score = 0.0;
-   str exp[1024], act[1024];
+  double score = 0.0;
+  str exp[1024], act[1024];
 
 #ifdef _WIN32
 #define V_MISSING_STR STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n")
 #define V_MATCH_STR STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n")
-#define V_MISMATCH_STR STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n")
+#define V_MISMATCH_STR                                                         \
+  STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n")
 #else
-#define V_MISSING_STR "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n"
-#define V_MATCH_STR "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 kh\xE1\xBB\x9Bp \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
-#define V_MISMATCH_STR "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 KH\xC3\x81" "C \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
+#define V_MISSING_STR                                                          \
+  "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n"
+#define V_MATCH_STR                                                            \
+  "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 kh\xE1\xBB\x9Bp \xE1\xBB\x99\xC3\xA1p "       \
+  "\xC3\xA1n!\n"
+#define V_MISMATCH_STR                                                         \
+  "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 KH\xC3\x81"                                   \
+  "C \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
 #endif
 
-   for (int i = 0; files[i]; ++i) {
+  for (int i = 0; files[i]; ++i) {
     if (join_path(exp, 1024, testsDir, files[i]) &&
         join_path(act, 1024, contestantsDir, files[i])) {
       if (!file_exists(act)) {
         /* Contestant produced no result file */
-        str_cat_s(comments, BUF,
-                  V_MISSING_STR);
+        str_cat_s(comments, BUF, V_MISSING_STR);
       } else if (compare_text_files(exp, act) == 1) {
-        str_cat_s(comments, BUF,
-                  V_MATCH_STR);
+        str_cat_s(comments, BUF, V_MATCH_STR);
         score += 1.0;
       } else
-        str_cat_s(comments, BUF,
-                  V_MISMATCH_STR);
+        str_cat_s(comments, BUF, V_MISMATCH_STR);
     }
     free(files[i]);
   }
