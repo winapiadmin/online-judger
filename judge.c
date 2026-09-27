@@ -346,7 +346,7 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 #else
       str_cat_s(comments, BUF_CCH,
                 "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y "
-                "k\xE1\xBA\xBFt qu\x1EA3\n");
+                "k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n");
 #endif
       free(files[i]);
       continue;

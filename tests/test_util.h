@@ -64,8 +64,8 @@ static void str_t_to_utf8(const str_t *ws, char *out, size_t cap) {
 extern double Judge(str_t *contestantsDir, str_t *testsDir, str_t *testOutputs,
                     str_t *testName, str_t **comments_out);
 
-static char g_tests_dir[1024];
-static char g_work_dir[1024];
+static char g_tests_dir[1100];
+static char g_work_dir[1100];
 static char g_base[1024];
 
 static void mkdir_one(const char *p) {

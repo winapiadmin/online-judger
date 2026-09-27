@@ -265,10 +265,20 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 
   double score = 0.0;
 
-  str exp[1024];
-  str act[1024];
+   str exp[1024];
+   str act[1024];
 
-  for (int i = 0; files[i]; ++i) {
+#ifdef _WIN32
+#define V_MISSING_STR STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n")
+#define V_MATCH_STR STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n")
+#define V_MISMATCH_STR STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n")
+#else
+#define V_MISSING_STR "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n"
+#define V_MATCH_STR "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 kh\xE1\xBB\x9Bp \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
+#define V_MISMATCH_STR "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 KH\xC3\x81" "C \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
+#endif
+
+   for (int i = 0; files[i]; ++i) {
 
     if (join_path(exp, 1024, testsDir, files[i]) &&
         join_path(act, 1024, contestantsDir, files[i])) {
@@ -276,7 +286,7 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
       if (!file_exists(act)) {
         /* Contestant produced no result file */
         str_cat_s(comments, BUF,
-                  STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n"));
+                  V_MISSING_STR);
         free(files[i]);
         continue;
       }
@@ -286,14 +296,14 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
       if (v == 1) {
 
         str_cat_s(comments, BUF,
-                  STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n"));
+                  V_MATCH_STR);
 
         score += 1.0;
 
       } else if (v == 0) {
 
         str_cat_s(comments, BUF,
-                  STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n"));
+                  V_MISMATCH_STR);
       }
     }
 
