@@ -11,7 +11,8 @@ class TestDataDialog : public QDialog {
   Q_OBJECT
 public:
   explicit TestDataDialog(const std::filesystem::path &testsDir,
-                          const QString &problemName, QWidget *parent = nullptr);
+                          const QString &problemName,
+                          QWidget *parent = nullptr);
 
 private slots:
   void onAddSubtest();

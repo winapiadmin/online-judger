@@ -10,6 +10,7 @@
 #include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
@@ -24,7 +25,6 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QVBoxLayout>
-#include <QHeaderView>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -87,16 +87,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   auto *fileMenu = menuBar->addMenu(tr("&File"));
 
   fileMenu->addAction(tr("&Import Contest (.contest)..."), this,
-                       &MainWindow::onLoadContest);
+                      &MainWindow::onLoadContest);
   fileMenu->addAction(tr("&Export Contest (.contest)..."), this,
-                       &MainWindow::onSaveContest);
+                      &MainWindow::onSaveContest);
   fileMenu->addSeparator();
   fileMenu->addAction(tr("Export to &CSV..."), this, &MainWindow::onExportCSV);
   fileMenu->addSeparator();
 
   auto *toolsMenu = menuBar->addMenu(tr("&Tools"));
   toolsMenu->addAction(tr("&Configure Compilers..."), this,
-                        &MainWindow::onConfigureCompilers);
+                       &MainWindow::onConfigureCompilers);
 
   statusBar()->showMessage(tr("Ready"));
 
@@ -106,10 +106,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
   if (!m_data.testsPath.isEmpty() && !m_data.submissionsPath.isEmpty()) {
     ::loadFromFolders(m_data);
     m_model->reload();
-    statusBar()->showMessage(
-        tr("Loaded %1 problems, %2 contestants")
-            .arg(m_data.problems.size())
-            .arg(m_data.contestants.size()));
+    statusBar()->showMessage(tr("Loaded %1 problems, %2 contestants")
+                                 .arg(m_data.problems.size())
+                                 .arg(m_data.contestants.size()));
   }
 }
 
@@ -128,15 +127,14 @@ void MainWindow::onSelectTests() {
   m_model->reload();
   syncDataToConfig();
   m_config.save();
-  statusBar()->showMessage(
-      tr("Loaded %1 problems, %2 contestants")
-          .arg(m_data.problems.size())
-          .arg(m_data.contestants.size()));
+  statusBar()->showMessage(tr("Loaded %1 problems, %2 contestants")
+                               .arg(m_data.problems.size())
+                               .arg(m_data.contestants.size()));
 }
 
 void MainWindow::onSelectSubmissions() {
-  QString dir = QFileDialog::getExistingDirectory(
-      this, tr("Select Submissions Folder"));
+  QString dir =
+      QFileDialog::getExistingDirectory(this, tr("Select Submissions Folder"));
   if (dir.isEmpty())
     return;
   m_data.submissionsPath = dir;
@@ -144,10 +142,9 @@ void MainWindow::onSelectSubmissions() {
   m_model->reload();
   syncDataToConfig();
   m_config.save();
-  statusBar()->showMessage(
-      tr("Loaded %1 problems, %2 contestants")
-          .arg(m_data.problems.size())
-          .arg(m_data.contestants.size()));
+  statusBar()->showMessage(tr("Loaded %1 problems, %2 contestants")
+                               .arg(m_data.problems.size())
+                               .arg(m_data.contestants.size()));
 }
 
 void MainWindow::onTableContextMenu(const QPoint &pos) {
@@ -162,8 +159,7 @@ void MainWindow::onTableContextMenu(const QPoint &pos) {
   QString prob = m_model->problemName(col);
 
   QMenu menu(this);
-  menu.addAction(tr("Re-test: %1").arg(prob),
-                 [this, col]() { onReTest(col); });
+  menu.addAction(tr("Re-test: %1").arg(prob), [this, col]() { onReTest(col); });
   menu.addAction(tr("Erase scores: %1").arg(prob),
                  [this, col]() { onEraseScores(col); });
   menu.addAction(tr("Modify test data: %1").arg(prob),
@@ -183,9 +179,7 @@ void MainWindow::onReTest(int problemCol) {
   startBatchReTest(problem);
 }
 
-void MainWindow::onCancelTest() {
-  m_cancelRequested = true;
-}
+void MainWindow::onCancelTest() { m_cancelRequested = true; }
 
 void MainWindow::startBatchReTest(const QString &problem) {
   if (m_data.submissionsPath.isEmpty() || m_data.testsPath.isEmpty()) {
@@ -219,41 +213,40 @@ void MainWindow::startBatchReTest(const QString &problem) {
   m_progressBar->setVisible(true);
   m_cancelBtn->setVisible(true);
 
-  auto *thread = QThread::create(
-      [this, contestants, problemStr, testcases, conf, judgerPath, subsDir,
-       total]() {
-        for (int i = 0; i < total; ++i) {
-          if (m_cancelRequested)
-            break;
+  auto *thread = QThread::create([this, contestants, problemStr, testcases,
+                                  conf, judgerPath, subsDir, total]() {
+    for (int i = 0; i < total; ++i) {
+      if (m_cancelRequested)
+        break;
 
-          std::string user = contestants[i].toStdString();
-          judge(subsDir, fs::path(m_data.testsPath.toStdString()), problemStr,
-                user, conf, testcases, judgerPath);
+      std::string user = contestants[i].toStdString();
+      judge(subsDir, fs::path(m_data.testsPath.toStdString()), problemStr, user,
+            conf, testcases, judgerPath);
 
-          QMetaObject::invokeMethod(
-              this, [this, i]() { m_progressBar->setValue(i + 1); });
-        }
+      QMetaObject::invokeMethod(
+          this, [this, i]() { m_progressBar->setValue(i + 1); });
+    }
 
-        // Collect scores
-        auto scores = getScores();
+    // Collect scores
+    auto scores = getScores();
 
-        QMetaObject::invokeMethod(this, [this, scores]() {
-          for (auto &[key, verdict] : scores) {
-            auto &[user, problem] = key;
-            auto &[verdictStr, points] = verdict;
-            QString qUser = QString::fromStdString(user);
-            QString qProb = QString::fromStdString(problem);
-            m_data.scores[qUser][qProb] = points;
-            m_data.verdicts[qUser + "/" + qProb] =
-                QString::fromStdString(verdictStr);
-          }
-          m_testRunning = false;
-          m_progressBar->setVisible(false);
-          m_cancelBtn->setVisible(false);
-          m_model->reload();
-          statusBar()->showMessage(tr("Re-test complete"), 5000);
-        });
-      });
+    QMetaObject::invokeMethod(this, [this, scores]() {
+      for (auto &[key, verdict] : scores) {
+        auto &[user, problem] = key;
+        auto &[verdictStr, points] = verdict;
+        QString qUser = QString::fromStdString(user);
+        QString qProb = QString::fromStdString(problem);
+        m_data.scores[qUser][qProb] = points;
+        m_data.verdicts[qUser + "/" + qProb] =
+            QString::fromStdString(verdictStr);
+      }
+      m_testRunning = false;
+      m_progressBar->setVisible(false);
+      m_cancelBtn->setVisible(false);
+      m_model->reload();
+      statusBar()->showMessage(tr("Re-test complete"), 5000);
+    });
+  });
   connect(thread, &QThread::finished, thread, &QObject::deleteLater);
   thread->start();
 }
@@ -311,9 +304,9 @@ void MainWindow::onDetailedResult(int problemCol) {
 
 void MainWindow::onAddContestant() {
   bool ok;
-  QString name = QInputDialog::getText(this, tr("Add Contestant"),
-                                       tr("Contestant name:"),
-                                       QLineEdit::Normal, {}, &ok);
+  QString name =
+      QInputDialog::getText(this, tr("Add Contestant"), tr("Contestant name:"),
+                            QLineEdit::Normal, {}, &ok);
   if (ok && !name.isEmpty()) {
     m_model->addContestant(name);
   }
@@ -328,9 +321,8 @@ void MainWindow::onRemoveContestant() {
 
 void MainWindow::onAddProblem() {
   bool ok;
-  QString name = QInputDialog::getText(this, tr("Add Problem"),
-                                       tr("Problem name:"),
-                                       QLineEdit::Normal, {}, &ok);
+  QString name = QInputDialog::getText(
+      this, tr("Add Problem"), tr("Problem name:"), QLineEdit::Normal, {}, &ok);
   if (ok && !name.isEmpty()) {
     m_model->addProblem(name);
   }
@@ -338,8 +330,7 @@ void MainWindow::onAddProblem() {
 
 void MainWindow::onLoadContest() {
   QString path = QFileDialog::getOpenFileName(
-      this, tr("Import Contest"), {},
-      tr("Contest Files (*.contest);;All (*)"));
+      this, tr("Import Contest"), {}, tr("Contest Files (*.contest);;All (*)"));
   if (path.isEmpty())
     return;
 

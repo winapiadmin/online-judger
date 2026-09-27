@@ -40,8 +40,8 @@ static std::string loadMaybeZlib(const fs::path &p) {
   std::vector<char> buf(destSize);
   int rc;
   while ((rc = uncompress((Bytef *)buf.data(), &destSize,
-                          (const Bytef *)data.data(),
-                          (uLong)data.size())) == Z_BUF_ERROR) {
+                          (const Bytef *)data.data(), (uLong)data.size())) ==
+         Z_BUF_ERROR) {
     if (buf.size() >= kMaxInflated)
       return std::string(data.begin(), data.end());
     destSize = buf.size() * 2;
@@ -95,12 +95,10 @@ std::string AppConfig::themisConfigPath() {
 std::vector<CompilerItem> AppConfig::defaultCompilers() {
 #if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
   return {
-      {".cpp",
-       "g++ -std=c++14 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c++ "
-       "-o\"%NAME%.exe\"|@WorkDir=%PATH%"},
-      {".c",
-       "gcc -std=c11 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c "
-       "-o\"%NAME%.exe\"|@WorkDir=%PATH%"},
+      {".cpp", "g++ -std=c++14 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c++ "
+               "-o\"%NAME%.exe\"|@WorkDir=%PATH%"},
+      {".c", "gcc -std=c11 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c "
+             "-o\"%NAME%.exe\"|@WorkDir=%PATH%"},
       {".pas",
        "fpc -o\"%NAME%.exe\" -O2 -XS -Sg \"%NAME%%EXT%\"|@WorkDir=%PATH%"},
       {".pp",
@@ -112,18 +110,14 @@ std::vector<CompilerItem> AppConfig::defaultCompilers() {
   };
 #else
   return {
-      {".cpp",
-       "g++ -std=c++14 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c++ "
-       "-o\"%NAME%.exe\" -Wl,--stack,66060288|@WorkDir=%PATH%"},
-      {".c",
-       "gcc -std=c11 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c "
-       "-o\"%NAME%.exe\" -Wl,--stack,66060288|@WorkDir=%PATH%"},
-      {".pas",
-       "fpc -o\"%NAME%.exe\" -O2 -XS -Sg -Cs66060288 \"%NAME%%EXT%\""
-       "|@WorkDir=%PATH%"},
-      {".pp",
-       "fpc -o\"%NAME%.exe\" -O2 -XS -Sg -Cs66060288 \"%NAME%%EXT%\""
-       "|@WorkDir=%PATH%"},
+      {".cpp", "g++ -std=c++14 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c++ "
+               "-o\"%NAME%.exe\" -Wl,--stack,66060288|@WorkDir=%PATH%"},
+      {".c", "gcc -std=c11 \"%NAME%%EXT%\" -pipe -O2 -s -static -lm -x c "
+             "-o\"%NAME%.exe\" -Wl,--stack,66060288|@WorkDir=%PATH%"},
+      {".pas", "fpc -o\"%NAME%.exe\" -O2 -XS -Sg -Cs66060288 \"%NAME%%EXT%\""
+               "|@WorkDir=%PATH%"},
+      {".pp", "fpc -o\"%NAME%.exe\" -O2 -XS -Sg -Cs66060288 \"%NAME%%EXT%\""
+              "|@WorkDir=%PATH%"},
       {".java", "\"javac\" \"%NAME%%EXT%\"|@WorkDir=%PATH%"},
       {".exe", ";No recompile if .exe already exists"},
       {".class", ";No recompile if .class already exists"},

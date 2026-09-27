@@ -5,12 +5,12 @@
 #include <QFileInfo>
 #include <QTextStream>
 #include <fstream>
+#include <ioapi.h>
 #include <sstream>
 #include <tinyxml2.h>
-#include <zlib.h>
-#include <zip.h>
 #include <unzip.h>
-#include <ioapi.h>
+#include <zip.h>
+#include <zlib.h>
 
 namespace fs = std::filesystem;
 
@@ -45,8 +45,7 @@ static std::string readFile(const std::filesystem::path &p) {
   std::ifstream f(p, std::ios::binary);
   if (!f)
     return {};
-  return {std::istreambuf_iterator<char>(f),
-          std::istreambuf_iterator<char>()};
+  return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
 }
 
 static bool writeFile(const std::filesystem::path &p, const std::string &s) {
@@ -228,7 +227,7 @@ bool importContestZip(const QString &contestPath, const QString &targetDir,
     unz_file_info64 fi;
     char filename[512];
     if (unzGetCurrentFileInfo64(uf, &fi, filename, sizeof(filename), nullptr, 0,
-                               nullptr, 0) != UNZ_OK)
+                                nullptr, 0) != UNZ_OK)
       continue;
 
     std::string name(filename);
@@ -325,8 +324,7 @@ bool loadFromFolders(GuiContestData &data) {
             }
 
             data.scores[contestant][problem] = eval;
-            data.verdicts[contestant + "/" + problem] =
-                hasFailed ? "X" : "V";
+            data.verdicts[contestant + "/" + problem] = hasFailed ? "X" : "V";
           }
         }
       }
@@ -349,8 +347,8 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
     const std::string &toWrite = compressed.empty() ? data : compressed;
     zip_fileinfo zi{};
     if (zipOpenNewFileInZip64(zf, name.c_str(), &zi, nullptr, 0, nullptr, 0,
-                              nullptr, Z_DEFLATED, Z_DEFAULT_COMPRESSION, 0) !=
-        ZIP_OK)
+                              nullptr, Z_DEFLATED, Z_DEFAULT_COMPRESSION,
+                              0) != ZIP_OK)
       return false;
     zipWriteInFileInZip(zf, toWrite.c_str(),
                         static_cast<unsigned>(toWrite.size()));
@@ -361,8 +359,8 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
   auto addRaw = [&](const std::string &name, const std::string &raw) {
     zip_fileinfo zi{};
     if (zipOpenNewFileInZip64(zf, name.c_str(), &zi, nullptr, 0, nullptr, 0,
-                              nullptr, Z_DEFLATED, Z_DEFAULT_COMPRESSION, 0) !=
-        ZIP_OK)
+                              nullptr, Z_DEFLATED, Z_DEFAULT_COMPRESSION,
+                              0) != ZIP_OK)
       return false;
     zipWriteInFileInZip(zf, raw.c_str(), static_cast<unsigned>(raw.size()));
     zipCloseFileInZip(zf);
@@ -417,8 +415,8 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
       if (fs::is_directory(probDir)) {
         for (auto &sub : fs::directory_iterator(probDir)) {
           if (sub.is_directory())
-            ss << prob.toStdString() << "\\"
-               << sub.path().stem().string() << "\n";
+            ss << prob.toStdString() << "\\" << sub.path().stem().string()
+               << "\n";
         }
       }
     }
@@ -478,8 +476,8 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
           if (!file.is_regular_file())
             continue;
           std::string fname = file.path().filename().string();
-          std::string zipPath = "Tasks/" + prob.toStdString() + "/" +
-                                testDir + "/" + fname;
+          std::string zipPath =
+              "Tasks/" + prob.toStdString() + "/" + testDir + "/" + fname;
           std::string content = readFile(file.path());
           addRaw(zipPath, content);
         }
@@ -497,8 +495,7 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
       if (!entry.is_regular_file())
         continue;
       std::string fname = entry.path().filename().string();
-      std::string zipPath =
-          "Contestants/" + cont.toStdString() + "/" + fname;
+      std::string zipPath = "Contestants/" + cont.toStdString() + "/" + fname;
       std::string content = readFile(entry.path());
       addRaw(zipPath, content);
     }
@@ -510,8 +507,8 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
         if (!entry.is_regular_file())
           continue;
         std::string fname = entry.path().filename().string();
-        std::string zipPath = "Contestants/" + cont.toStdString() +
-                              "/$History/" + fname;
+        std::string zipPath =
+            "Contestants/" + cont.toStdString() + "/$History/" + fname;
         std::string content = readFile(entry.path());
         addRaw(zipPath, content);
       }
@@ -545,8 +542,7 @@ bool exportContestZip(const QString &path, const GuiContestData &data) {
         for (auto &st : cfg.subtests) {
           auto *tr = doc.NewElement("TestResult");
           tr->SetAttribute("TestName", st.name.toStdString().c_str());
-          tr->SetAttribute("Evaluation",
-                           score > 0 ? st.mark : 0.0f);
+          tr->SetAttribute("Evaluation", score > 0 ? st.mark : 0.0f);
           er->InsertEndChild(tr);
         }
         cr->InsertEndChild(er);
@@ -598,8 +594,8 @@ toGuiCompilers(const std::vector<CompilerItem> &items) {
   std::vector<GuiCompilerItem> out;
   out.reserve(items.size());
   for (auto &ci : items)
-    out.push_back({QString::fromStdString(ci.ext),
-                   QString::fromStdString(ci.cmd)});
+    out.push_back(
+        {QString::fromStdString(ci.ext), QString::fromStdString(ci.cmd)});
   return out;
 }
 
@@ -641,8 +637,8 @@ buildTestcasesMap(const fs::path &testsDir) {
       tc.Mark = guiCfg.mark;
 
       for (auto &gs : guiCfg.subtests) {
-        tc.subtests.push_back({gs.name.toStdString(), gs.memoryLimit,
-                               gs.timeLimit, gs.mark});
+        tc.subtests.push_back(
+            {gs.name.toStdString(), gs.memoryLimit, gs.timeLimit, gs.mark});
       }
 
       // Fix evaluator path: lib prefix + platform extension
@@ -684,8 +680,8 @@ buildTestcasesMap(const fs::path &testsDir) {
       for (auto &test : fs::directory_iterator(fd.path())) {
         if (!test.is_directory())
           continue;
-        tc.subtests.push_back(Subtest{
-            test.path().filename().string(), -1, -1, 1.0});
+        tc.subtests.push_back(
+            Subtest{test.path().filename().string(), -1, -1, 1.0});
       }
     }
   }

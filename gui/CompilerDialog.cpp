@@ -50,7 +50,8 @@ CompilerDialog::CompilerDialog(std::vector<GuiCompilerItem> &compilers,
   auto *shortcutIns = new QShortcut(QKeySequence(Qt::Key_Insert), this);
   connect(shortcutIns, &QShortcut::activated, this, &CompilerDialog::onInsert);
 
-  auto *shortcutDel = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Delete), this);
+  auto *shortcutDel =
+      new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Delete), this);
   connect(shortcutDel, &QShortcut::activated, this, &CompilerDialog::onRemove);
 
   auto *shortcutUp = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_U), this);
@@ -60,13 +61,13 @@ CompilerDialog::CompilerDialog(std::vector<GuiCompilerItem> &compilers,
   connect(shortcutDown, &QShortcut::activated, this,
           &CompilerDialog::onMoveDown);
 
-  auto *btnBox = new QDialogButtonBox(
-      QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  auto *btnBox =
+      new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   connect(btnBox, &QDialogButtonBox::accepted, this, [this]() {
     m_compilers.clear();
     for (int i = 0; i < m_table->rowCount(); ++i) {
-      m_compilers.push_back({m_table->item(i, 0)->text(),
-                             m_table->item(i, 1)->text()});
+      m_compilers.push_back(
+          {m_table->item(i, 0)->text(), m_table->item(i, 1)->text()});
     }
     accept();
   });
