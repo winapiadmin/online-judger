@@ -71,8 +71,7 @@ int main(void) {
     }
     exp[eo++] = '\n';
     run(exp, act, &s, c, sizeof(c));
-    CHECK(s == 0.0,
-          "C1 must detect a difference deep inside a very long line");
+    CHECK(s == 0.0, "C1 must detect a difference deep inside a very long line");
     free(exp);
     free(act);
   }
@@ -85,7 +84,7 @@ int main(void) {
         "C1 missing-file Vietnamese verdict missing");
 
   remove_tree_best_effort(g_base);
-  printf("%s: %d checks, %d failures\n",
-         g_failures ? "FAILED" : "PASSED", g_checks, g_failures);
+  printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED",
+         g_checks, g_failures);
   return g_failures ? 1 : 0;
 }

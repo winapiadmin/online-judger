@@ -8,7 +8,6 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
-#include <QSpinBox>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -99,8 +98,8 @@ TestDataDialog::TestDataDialog(const std::filesystem::path &testsDir,
   subBtnLayout->addStretch();
   mainLayout->addLayout(subBtnLayout);
 
-  auto *btnBox = new QDialogButtonBox(
-      QDialogButtonBox::Save | QDialogButtonBox::Cancel);
+  auto *btnBox =
+      new QDialogButtonBox(QDialogButtonBox::Save | QDialogButtonBox::Cancel);
   connect(btnBox, &QDialogButtonBox::accepted, this, &TestDataDialog::onSave);
   connect(btnBox, &QDialogButtonBox::rejected, this, &QDialog::reject);
   mainLayout->addWidget(btnBox);
@@ -127,8 +126,7 @@ void TestDataDialog::loadFromConfig() {
     m_subtestTable->setItem(i, 0, new QTableWidgetItem(st.name));
     auto *markItem = new QTableWidgetItem(QString::number(st.mark, 'f', 2));
     m_subtestTable->setItem(i, 1, markItem);
-    auto *tlItem =
-        new QTableWidgetItem(QString::number(st.timeLimit, 'f', 2));
+    auto *tlItem = new QTableWidgetItem(QString::number(st.timeLimit, 'f', 2));
     m_subtestTable->setItem(i, 2, tlItem);
     auto *mlItem = new QTableWidgetItem(QString::number(st.memoryLimit));
     m_subtestTable->setItem(i, 3, mlItem);
@@ -155,7 +153,7 @@ void TestDataDialog::onRemoveSubtest() {
 void TestDataDialog::onBrowseInput() {
   QString file =
       QFileDialog::getOpenFileName(this, tr("Select Input File"),
-                                  QString::fromStdString(m_testsDir.string()));
+                                   QString::fromStdString(m_testsDir.string()));
   if (!file.isEmpty())
     m_inputEdit->setText(QFileInfo(file).fileName());
 }
@@ -190,8 +188,7 @@ void TestDataDialog::onSave() {
   }
 
   if (!writeProblemConfig(m_testsDir, m_problemName.toStdString(), m_config)) {
-    QMessageBox::warning(this, tr("Error"),
-                         tr("Failed to save Settings.cfg"));
+    QMessageBox::warning(this, tr("Error"), tr("Failed to save Settings.cfg"));
     return;
   }
   accept();

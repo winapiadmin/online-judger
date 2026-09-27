@@ -5,8 +5,8 @@
 #include <vector>
 
 // Unified configuration for CLI and GUI.
-// Loads from: Themis XML (%APPDATA%/Themis.cfg) → JSON (~/.config/online-judger/oj.cfg) → defaults.
-// Saves to: JSON only.
+// Loads from: Themis XML (%APPDATA%/Themis.cfg) → JSON
+// (~/.config/online-judger/oj.cfg) → defaults. Saves to: JSON only.
 class AppConfig {
 public:
   AppConfig() = default;

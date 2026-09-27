@@ -145,8 +145,7 @@ void ContestModel::removeProblem(int col) {
 void ContestModel::addContestant(const QString &name) {
   if (d.contestants.contains(name))
     return;
-  beginInsertRows(QModelIndex(), d.contestants.size(),
-                  d.contestants.size());
+  beginInsertRows(QModelIndex(), d.contestants.size(), d.contestants.size());
   d.contestants.append(name);
   endInsertRows();
   emit contestModified();
