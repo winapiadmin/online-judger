@@ -1,4 +1,7 @@
 */
+!gui/
+!common/
+!tests/
 !*.cpp
 !*.c
 !*.h
