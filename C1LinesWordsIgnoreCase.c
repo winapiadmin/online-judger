@@ -77,8 +77,8 @@ typedef char str;
 #define str_len strlen
 #define str_dup strdup
 #define str_cmp strcmp
-#define str_cat_s(b, c, s)                                                                            \
-    strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
+#define str_cat_s(b, c, s)                                                     \
+  strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
 #define str_cpy_s(d, c, s) strncpy(d, s, c)
 #define str_tok strtok_r
 #define str_tolower tolower
