@@ -1,5 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
+
+cmake_policy(SET CMP0091 NEW)
+
 project(judger LANGUAGES C CXX)
+
+if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -26,32 +33,38 @@ if (_ZLIB_FINDPACKAGE)
   find_package(ZLIB QUIET)
 endif()
 if (NOT TARGET ZLIB::ZLIB)
+  set(ZLIB_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+  set(ZLIB_BUILD_STATIC ON CACHE BOOL "" FORCE)
+
   FetchContent_Declare(
     zlib
-    GIT_REPOSITORY "https://github.com/madler/zlib.git"
+    GIT_REPOSITORY https://github.com/madler/zlib.git
     GIT_TAG develop
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(zlib)
-  if(TARGET zlibstatic)
-      add_library(ZLIB::ZLIB ALIAS zlibstatic)
-  elseif (TARGET zlib)
-      add_library(ZLIB::ZLIB ALIAS zlib)
+
+  if (TARGET zlibstatic)
+    # Keep zlibstatic behind an imported interface target.
+    add_library(ZLIB::ZLIB INTERFACE IMPORTED GLOBAL)
+    set_property(TARGET ZLIB::ZLIB
+      PROPERTY INTERFACE_LINK_LIBRARIES zlibstatic)
   endif()
 else()
   message(STATUS "Found ZLIB")
-  # Ensure zlib source is available for minizip (GUI needs contrib/minizip)
-  FetchContent_Declare(
-    zlib_src
-    SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/zlib-src
-    GIT_REPOSITORY "https://github.com/madler/zlib.git"
-    GIT_TAG develop
-    GIT_SHALLOW TRUE
-  )
-  FetchContent_GetProperties(zlib_src)
-  if(NOT zlib_src_POPULATED)
-    FetchContent_Populate(zlib_src)
-  endif()
+endif()
+
+# Ensure zlib source is available for minizip (GUI needs contrib/minizip)
+FetchContent_Declare(
+  zlib_src
+  SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/zlib-src
+  GIT_REPOSITORY "https://github.com/madler/zlib.git"
+  GIT_TAG develop
+  GIT_SHALLOW TRUE
+)
+FetchContent_GetProperties(zlib_src)
+if(NOT zlib_src_POPULATED)
+  FetchContent_Populate(zlib_src)
 endif()
 
 # ---- CLI11 ----
@@ -81,6 +94,8 @@ if (NOT cpptrace_FOUND)
     GIT_TAG main
     GIT_SHALLOW TRUE
   )
+set(CPPTRACE_PROVIDE_EXPORT_SET_FOR_LIBDWARF OFF
+    CACHE BOOL "Disable cpptrace's duplicate libdwarf export" FORCE)
   FetchContent_MakeAvailable(cpptrace)
 else()
   message(STATUS "Found cpp-trace")

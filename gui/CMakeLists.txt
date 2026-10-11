@@ -11,8 +11,7 @@ if(NOT Qt6_FOUND)
 endif()
 
 # minizip (from zlib contrib — sources bundled with zlib's git repo)
-FetchContent_GetProperties(zlib_src SOURCE_DIR ZLIB_SRC_DIR)
-set(MINIZIP_DIR ${ZLIB_SRC_DIR}/contrib/minizip)
+set(MINIZIP_DIR ${CMAKE_BINARY_DIR}/_deps/zlib-src/contrib/minizip)
 add_library(minizip STATIC
     ${MINIZIP_DIR}/ioapi.c
     ${MINIZIP_DIR}/unzip.c
@@ -58,3 +57,22 @@ else()
 endif()
 
 install(TARGETS judger_gui RUNTIME DESTINATION bin)
+if(WIN32)
+    if(Qt6_FOUND)
+        add_custom_command(TARGET judger_gui POST_BUILD
+            COMMAND "${Qt6_DIR}/../../../bin/windeployqt.exe"
+                    --no-translations
+                    "$<TARGET_FILE:judger_gui>"
+            COMMENT "Deploying Qt 6 runtime DLLs"
+            VERBATIM
+        )
+    else()
+        add_custom_command(TARGET judger_gui POST_BUILD
+            COMMAND "${Qt5_DIR}/../../../bin/windeployqt.exe"
+                    --no-translations
+                    "$<TARGET_FILE:judger_gui>"
+            COMMENT "Deploying Qt 5 runtime DLLs"
+            VERBATIM
+        )
+    endif()
+endif()
