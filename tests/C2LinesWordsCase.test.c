@@ -48,7 +48,9 @@ int main(void) {
       ao += (size_t)sprintf(act + ao, i ? " W%d" : "W%d", i);
     }
     exp[eo++] = '\n';
+    exp[eo] = '\0';
     act[ao++] = '\n';
+    act[ao] = '\0';
     run(exp, act, &s);
     CHECK(s == 1.0, "C2 long-line identical content should score 1.0");
     free(exp);

@@ -55,7 +55,9 @@ int main(void) {
       ao += (size_t)sprintf(act + ao, i ? " w%d" : "w%d", i);
     }
     exp[eo++] = '\n';
+    exp[eo] = '\0';
     act[ao++] = '\n';
+    act[ao] = '\0';
     run(exp, act, &s, c, sizeof(c));
     CHECK(s == 1.0, "C1 long-line identical content should score 1.0");
 
@@ -70,6 +72,7 @@ int main(void) {
         eo += (size_t)sprintf(exp + eo, i ? " w%d" : "w%d", i);
     }
     exp[eo++] = '\n';
+    exp[eo] = '\0';
     run(exp, act, &s, c, sizeof(c));
     CHECK(s == 0.0, "C1 must detect a difference deep inside a very long line");
     free(exp);
