@@ -169,12 +169,19 @@ int main(int argc, char **argv) {
       std::string content = load_maybe_zlib(settings_path);
       parseSettingsFormat(content, testcases[name]);
       fs::path f = testcases[name].EvaluatorName;
-      f.replace_filename(
+      {
+        std::string fn = f.filename().string();
 #if defined(__unix__) || defined(__linux__) || defined(__APPLE__) ||           \
     defined(__MSYS__)
-          "lib" +
+        // Idempotent: legacy Themis configs carry bare names like
+        // "C5Binary.dll", but callers may already pass "libC5Binary.so".
+        // Only prepend "lib" when it is missing, otherwise we produce
+        // "liblibC5Binary.so" and the evaluator fails to load (X verdict).
+        if (fn.rfind("lib", 0) != 0)
+          fn = "lib" + fn;
 #endif
-          f.filename().string());
+        f.replace_filename(fn);
+      }
       f.replace_extension(
 #if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
           ".so"

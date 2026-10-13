@@ -271,12 +271,16 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   PLOGD << "[" << user << "/" << problem << "] compiling with: [" << expandedCmd
         << "] at [" << workdir << "]";
 
-  // Compile the code (5-minute cap; slow toolchains / cold AV scans happen)
+  // Compile the code (5-minute cap; slow toolchains / cold AV scans happen).
+  // NOTE: no memory cap here (maxMemory=0). On POSIX the cap is enforced
+  // via RLIMIT_AS (address space), and a 1 GiB virtual cap starves the
+  // compiler itself (cc1plus mmap fails) so every submission mis-reports
+  // as a compile error (X). Runtime limits are still applied per test case.
   constexpr float kCompileTimeoutSec = 300.0f;
   ProcessResult compileInfo;
   try {
     compileInfo = run_command(split_args_quoted(expandedCmd), workdir, "",
-                              kCompileTimeoutSec);
+                              kCompileTimeoutSec, 0);
   } catch (const CPError<CPErrors::TLE> &) {
     _LOG(plog::error, "[" << user << "/" << problem
                           << "] compilation timed out ("
