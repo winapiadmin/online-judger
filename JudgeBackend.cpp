@@ -307,7 +307,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   ofstream out(subdir / "$History" / fn);
   if (!out.is_open()) {
     PLOGE << (subdir / "$History" / fn).string() << " (" << strerror(errno)
-            << ")";
+          << ")";
     set_score(user, problem, "X", 0.0);
     return;
   }
@@ -382,7 +382,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
       rawCmd, {{"NAME", name}, {"EXT", ext}, {"PATH", path}});
 
   PLOGD << "[" << user << "/" << problem << "] compiling with: [" << expandedCmd
-         << "] at [" << workdir.string() << "]";
+        << "] at [" << workdir.string() << "]";
 
   // Compile the code (5-minute cap; slow toolchains / cold AV scans happen).
   // NOTE: no memory cap here (maxMemory=0). On POSIX the cap is enforced
