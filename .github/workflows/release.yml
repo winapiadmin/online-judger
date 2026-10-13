@@ -8,7 +8,8 @@ on:
         required: false
         default: main
   push:
-
+    branches: [main]
+    
 permissions:
   contents: write
 
@@ -39,10 +40,12 @@ jobs:
         if: runner.os == 'Windows'
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.7.*'
+          version: '6.12.*'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
+          archives: 'qtbase'
+          aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI=ON
