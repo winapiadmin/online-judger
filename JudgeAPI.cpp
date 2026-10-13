@@ -90,8 +90,8 @@ JudgeFn Load(const char *path) {
   if (!fn)
     throw std::runtime_error(std::string("GetProcAddress(Judge) failed for ") +
                              path + ": " + describe_last_error());
-  auto freeFn =
-      getProc<FreeJudgeCommentFn>(mod, "FreeJudgeComment", "_FreeJudgeComment@4");
+  auto freeFn = getProc<FreeJudgeCommentFn>(mod, "FreeJudgeComment",
+                                            "_FreeJudgeComment@4");
 #else
   void *mod = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!mod)
@@ -194,9 +194,8 @@ double STDCALL CallJudgeUTF8(JudgeFn fn, const char *contestantsDir,
   std::string cTestOutputs(testOutputs ? testOutputs : "");
   std::string cTestName(testName ? testName : "");
   char *cComments = nullptr;
-  double result =
-      fn(cContestantsDir.data(), cTestsDir.data(), cTestOutputs.data(),
-         cTestName.data(), &cComments);
+  double result = fn(cContestantsDir.data(), cTestsDir.data(),
+                     cTestOutputs.data(), cTestName.data(), &cComments);
   if (comments) {
     comments->clear();
     if (cComments)

@@ -231,8 +231,7 @@ ProcessResult run_command(const std::vector<std::string> &command,
   std::thread stdinWriter([&] {
     size_t total = 0;
     while (total < stdin_data.size() && !cancelWriter.load()) {
-      DWORD chunk =
-          (DWORD)min<size_t>(stdin_data.size() - total, (size_t)4096);
+      DWORD chunk = (DWORD)min<size_t>(stdin_data.size() - total, (size_t)4096);
       DWORD written = 0;
       if (!WriteFile(inWr.h, stdin_data.data() + total, chunk, &written,
                      nullptr))
@@ -268,8 +267,8 @@ ProcessResult run_command(const std::vector<std::string> &command,
     while (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) &&
            avail > 0) {
       DWORD nread = 0;
-      if (!ReadFile(h, buffer, min<DWORD>((DWORD)sizeof(buffer), avail),
-                    &nread, nullptr) ||
+      if (!ReadFile(h, buffer, min<DWORD>((DWORD)sizeof(buffer), avail), &nread,
+                    nullptr) ||
           nread == 0)
         break;
       into.append(buffer, nread);
@@ -458,7 +457,9 @@ ProcessResult run_command(const std::vector<std::string> &command,
     while (total < stdin_data.size()) {
       if (cancelWriter.load())
         break;
-      struct pollfd pfd{stdin_pipe[1], POLLOUT, 0};
+      struct pollfd pfd {
+        stdin_pipe[1], POLLOUT, 0
+      };
       int pr = poll(&pfd, 1, 250);
       if (pr < 0) {
         if (errno == EINTR)

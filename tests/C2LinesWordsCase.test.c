@@ -70,8 +70,7 @@ int main(void) {
     exp[eo++] = '\n';
     exp[eo] = '\0';
     run(exp, act, &s, c, sizeof(c));
-    CHECK(s == 0.0,
-          "C2 must detect a difference deep inside a very long line");
+    CHECK(s == 0.0, "C2 must detect a difference deep inside a very long line");
     free(exp);
     free(act);
   }

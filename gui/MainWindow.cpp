@@ -196,8 +196,7 @@ void MainWindow::startBatchReTest(const QString &problem) {
 
   // Evaluator shared libraries live next to the executable, not necessarily
   // in the working directory (file dialogs may leave it anywhere).
-  fs::path judgerPath =
-      QCoreApplication::applicationDirPath().toStdString();
+  fs::path judgerPath = QCoreApplication::applicationDirPath().toStdString();
   if (judgerPath.empty())
     judgerPath = fs::current_path();
 

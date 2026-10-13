@@ -19,6 +19,5 @@ getScores();
 // (and MSVC builds ship "C5Binary.dll" with no lib prefix, even when
 // __MSYS__ is defined). Falls back to the platform-mapped name when neither
 // exists so the loader can report the missing file.
-std::string
-resolveEvaluatorName(const std::string &configured,
-                     const std::filesystem::path &judgersDir);
+std::string resolveEvaluatorName(const std::string &configured,
+                                 const std::filesystem::path &judgersDir);

@@ -374,8 +374,8 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
       continue;
     }
 
-  cat_bounded(comments, BUF_CCH, files[i]);
-  cat_bounded(comments, BUF_CCH, STR_LIT(": "));
+    cat_bounded(comments, BUF_CCH, files[i]);
+    cat_bounded(comments, BUF_CCH, STR_LIT(": "));
 
     if (!file_exists(act)) {
       /* Contestant produced no result file */

@@ -130,9 +130,9 @@ optional<fs::path> find_executable(const fs::path &workdir) {
   // sources and libraries: directory iteration order is unspecified, so a
   // stray script/DLL must not win over the compiler's output.
   static const char *kNonExecExts[] = {
-      ".cpp", ".c",  ".h",   ".hpp", ".hxx", ".cc",  ".cxx", ".pas",
-      ".pp",  ".java", ".py", ".class", ".o",  ".obj", ".a",   ".lib",
-      ".pdb", ".ilk", ".exp", ".dll",  ".so",  ".dylib"};
+      ".cpp", ".c",    ".h",   ".hpp",   ".hxx", ".cc",   ".cxx", ".pas",
+      ".pp",  ".java", ".py",  ".class", ".o",   ".obj",  ".a",   ".lib",
+      ".pdb", ".ilk",  ".exp", ".dll",   ".so",  ".dylib"};
   optional<fs::path> best;
   fs::file_time_type bestTime = fs::file_time_type::min();
   std::error_code ec;
@@ -249,9 +249,8 @@ static string history_stamp() {
   throw CPError<CPErrors::IR>(ec);
 }
 
-std::string
-resolveEvaluatorName(const std::string &configured,
-                     const fs::path &judgersDir) {
+std::string resolveEvaluatorName(const std::string &configured,
+                                 const fs::path &judgersDir) {
   fs::path orig(configured);
   fs::path mapped = orig;
   {
@@ -523,10 +522,10 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
       double _points = 0.0;
       {
         std::lock_guard<std::mutex> eval_lock(evaluator_mutex(evaluatorKey));
-        double raw = CallJudgeUTF8(
-            judgeFn, fs::canonical(workdir).string().c_str(),
-            (tdir / problem / tc.Name).string().c_str(), tests.OutputFile.c_str(),
-            problem.c_str(), &comments);
+        double raw =
+            CallJudgeUTF8(judgeFn, fs::canonical(workdir).string().c_str(),
+                          (tdir / problem / tc.Name).string().c_str(),
+                          tests.OutputFile.c_str(), problem.c_str(), &comments);
         double mark = (tc.Mark == -1 ? tests.Mark : tc.Mark);
         // A buggy evaluator must not corrupt the total with NaN/negative
         // or out-of-range scores.
@@ -546,8 +545,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
       _LOG(plog::error, "[" << user << "/" << problem << "] TLEd " << tc.Name);
     } catch (CPError<CPErrors::MLE> &e) {
       (void)e;
-      _LOG(plog::error,
-           "[" << user << "/" << problem << "] MLEd " << tc.Name);
+      _LOG(plog::error, "[" << user << "/" << problem << "] MLEd " << tc.Name);
     } catch (CPError<CPErrors::OLE> &e) {
       (void)e;
       _LOG(plog::error, "[" << user << "/" << problem

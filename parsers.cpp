@@ -924,8 +924,7 @@ void ParseGlobalOptions<ParseType::JSON>(const std::string_view &text,
 
   // Accept the documented wrapper as well as bare sections.
   const nlohmann::json *root = &j;
-  if (j.contains("ThemisConfiguration") &&
-      j["ThemisConfiguration"].is_object())
+  if (j.contains("ThemisConfiguration") && j["ThemisConfiguration"].is_object())
     root = &j["ThemisConfiguration"];
   else if (j.contains("Configuration") && j["Configuration"].is_object())
     root = &j["Configuration"];
