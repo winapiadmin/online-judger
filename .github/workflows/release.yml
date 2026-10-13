@@ -40,10 +40,11 @@ jobs:
         if: runner.os == 'Windows'
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.12.*'
+          version: '6.7.*'
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
+          archives: 'qtbase'
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI=ON
