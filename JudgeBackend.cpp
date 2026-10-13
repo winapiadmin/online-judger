@@ -295,15 +295,19 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
     std::error_code dce;
     fs::create_directories(subdir / "$History", dce);
     if (dce) {
-      PLOGE << "cannot create history dir " << (subdir / "$History") << ": "
-            << dce.message();
+      // .string(): never stream a path object into plog — its operator<<
+      // overloads are ambiguous against std::filesystem::operator<< on some
+      // toolchains (MSVC + Qt/UNICODE + old plog).
+      PLOGE << "cannot create history dir " << (subdir / "$History").string()
+            << ": " << dce.message();
       set_score(user, problem, "X", 0.0);
       return;
     }
   }
   ofstream out(subdir / "$History" / fn);
   if (!out.is_open()) {
-    PLOGE << subdir / "$History" / fn << " (" << strerror(errno) << ")";
+    PLOGE << (subdir / "$History" / fn).string() << " (" << strerror(errno)
+            << ")";
     set_score(user, problem, "X", 0.0);
     return;
   }
@@ -322,7 +326,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
 
   fs::path sourceDir = subdir / user;
   if (!fs::is_directory(sourceDir)) {
-    PLOGE << sourceDir << " is not a directory";
+    PLOGE << sourceDir.string() << " is not a directory";
     set_score(user, problem, "X", 0.0);
     return;
   }
@@ -378,7 +382,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
       rawCmd, {{"NAME", name}, {"EXT", ext}, {"PATH", path}});
 
   PLOGD << "[" << user << "/" << problem << "] compiling with: [" << expandedCmd
-        << "] at [" << workdir << "]";
+         << "] at [" << workdir.string() << "]";
 
   // Compile the code (5-minute cap; slow toolchains / cold AV scans happen).
   // NOTE: no memory cap here (maxMemory=0). On POSIX the cap is enforced
@@ -420,8 +424,8 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
     return;
   }
 
-  _LOG(plog::info,
-       "[" << user << "/" << problem << "] compiled successfully at " << *exe);
+  _LOG(plog::info, "[" << user << "/" << problem
+                       << "] compiled successfully at " << exe->string());
 
   // Load evaluator (cached by path; safe to call from any thread)
   JudgeFn judgeFn = nullptr;

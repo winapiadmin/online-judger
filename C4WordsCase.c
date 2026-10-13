@@ -287,6 +287,7 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 #define V_MISMATCH_STR                                                         \
   "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 KH\xC3\x81"                                   \
   "C \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
+#define V_ERROR_STR "ERROR\n"
 #endif
 
   for (int i = 0; files[i]; ++i) {
