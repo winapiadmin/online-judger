@@ -2,6 +2,7 @@
 !gui/
 !common/
 !tests/
+!docs/
 !*.cpp
 !*.c
 !*.h

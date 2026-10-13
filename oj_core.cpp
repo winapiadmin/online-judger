@@ -168,30 +168,10 @@ int main(int argc, char **argv) {
     if (fs::exists(settings_path)) {
       std::string content = load_maybe_zlib(settings_path);
       parseSettingsFormat(content, testcases[name]);
-      fs::path f = testcases[name].EvaluatorName;
-      {
-        std::string fn = f.filename().string();
-#if defined(__unix__) || defined(__linux__) || defined(__APPLE__) ||           \
-    defined(__MSYS__)
-        // Idempotent: legacy Themis configs carry bare names like
-        // "C5Binary.dll", but callers may already pass "libC5Binary.so".
-        // Only prepend "lib" when it is missing, otherwise we produce
-        // "liblibC5Binary.so" and the evaluator fails to load (X verdict).
-        if (fn.rfind("lib", 0) != 0)
-          fn = "lib" + fn;
-#endif
-        f.replace_filename(fn);
-      }
-      f.replace_extension(
-#if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
-          ".so"
-#elif defined(_WIN32)
-          ".dll"
-#else
-          f.extension()
-#endif
-      );
-      testcases[name].EvaluatorName = f.string();
+      // Shared with the GUI: map legacy Themis evaluator names to this
+      // platform's convention, preferring whichever variant exists.
+      testcases[name].EvaluatorName =
+          resolveEvaluatorName(testcases[name].EvaluatorName, judgers);
     } else {
       testcases[name].InputFile = name + ".INP";
       testcases[name].OutputFile = name + ".OUT";
@@ -232,12 +212,14 @@ int main(int argc, char **argv) {
       jobList.push_back({user.path().stem().string(), problem.first});
   }
 
-  unsigned maxThreads = jobs < 0 ? 0 : (unsigned)jobs;
+  unsigned maxThreads = (unsigned)jobs; // jobs >= 0 (CLI::NonNegativeNumber)
   if (maxThreads == 0) {
     maxThreads = std::thread::hardware_concurrency();
     if (maxThreads == 0)
       maxThreads = 1;
   }
+  if (maxThreads > 256)
+    maxThreads = 256; // each job compiles; never spawn thousands of threads
   size_t threadCount =
       std::min<size_t>(maxThreads, std::max<size_t>(jobList.size(), 1));
 

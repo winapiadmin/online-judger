@@ -1,14 +1,245 @@
 #include "Parsers.h"
+#include <cctype>
 #include <nlohmann/json.hpp>
+#include <optional>
+#include <string>
 #include <tinyxml2.h>
 #include <toml++/toml.h>
+#include <vector>
 #include <yaml-cpp/yaml.h>
 using namespace std;
+
+namespace {
+// Lowercase a copy (for tolerant boolean parsing).
+static std::string lower_copy(std::string s) {
+  for (char &ch : s)
+    ch = static_cast<char>(std::tolower((unsigned char)ch));
+  return s;
+}
+
+// First non-whitespace byte: '<' is XML, '{' is JSON. Used to order the
+// auto-detect attempts so JSON documents (which are also valid YAML) are
+// not misread by the YAML parser first.
+static char sniff_format(const std::string_view sv) {
+  for (char c : sv)
+    if (!isspace((unsigned char)c))
+      return c;
+  return 0;
+}
+
+// ---- tolerant JSON accessors (numbers/bools may arrive as strings) ----
+static float json_float(const nlohmann::json &j, const char *key, float def) {
+  auto it = j.find(key);
+  if (it == j.end() || it->is_null())
+    return def;
+  if (it->is_number())
+    return it->get<float>();
+  if (it->is_boolean())
+    return it->get<bool>() ? 1.0f : 0.0f;
+  if (it->is_string()) {
+    try {
+      size_t pos = 0;
+      float r = std::stof(it->get<std::string>(), &pos);
+      if (pos == it->get<std::string>().size())
+        return r;
+    } catch (...) {
+    }
+  }
+  return def;
+}
+
+static int json_int(const nlohmann::json &j, const char *key, int def) {
+  auto it = j.find(key);
+  if (it == j.end() || it->is_null())
+    return def;
+  if (it->is_number_integer())
+    return static_cast<int>(it->get<long long>());
+  if (it->is_number())
+    return static_cast<int>(it->get<double>());
+  if (it->is_boolean())
+    return it->get<bool>() ? 1 : 0;
+  if (it->is_string()) {
+    try {
+      size_t pos = 0;
+      long long r = std::stoll(it->get<std::string>(), &pos);
+      if (pos == it->get<std::string>().size())
+        return static_cast<int>(r);
+    } catch (...) {
+    }
+  }
+  return def;
+}
+
+static bool json_bool(const nlohmann::json &j, const char *key, bool def) {
+  auto it = j.find(key);
+  if (it == j.end() || it->is_null())
+    return def;
+  if (it->is_boolean())
+    return it->get<bool>();
+  if (it->is_number())
+    return it->get<double>() != 0.0;
+  if (it->is_string()) {
+    std::string s = lower_copy(it->get<std::string>());
+    if (s == "true" || s == "1")
+      return true;
+    if (s == "false" || s == "0")
+      return false;
+  }
+  return def;
+}
+
+static std::string json_str(const nlohmann::json &j, const char *key) {
+  auto it = j.find(key);
+  if (it != j.end() && it->is_string())
+    return it->get<std::string>();
+  return "";
+}
+
+// ---- tolerant TOML accessors (ints may arrive as floats/strings) ----
+static std::optional<int64_t> toml_opt_i64(const toml::node &n) {
+  if (auto v = n.value<int64_t>())
+    return *v;
+  if (auto v = n.value<double>())
+    return static_cast<int64_t>(*v);
+  if (auto v = n.value<bool>())
+    return *v ? 1 : 0;
+  if (auto v = n.value<std::string>()) {
+    try {
+      size_t pos = 0;
+      long long r = std::stoll(*v, &pos);
+      if (pos == v->size())
+        return r;
+    } catch (...) {
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<bool> toml_opt_bool(const toml::node &n) {
+  if (auto v = n.value<bool>())
+    return *v;
+  if (auto v = n.value<int64_t>())
+    return *v != 0;
+  if (auto v = n.value<double>())
+    return *v != 0.0;
+  if (auto v = n.value<std::string>()) {
+    std::string s = lower_copy(*v);
+    if (s == "true" || s == "1")
+      return true;
+    if (s == "false" || s == "0")
+      return false;
+  }
+  return std::nullopt;
+}
+
+static const toml::node &toml_req(const toml::table &t, const char *key) {
+  const toml::node *n = t.get(key);
+  if (!n)
+    throw std::runtime_error(std::string("Missing key: ") + key);
+  return *n;
+}
+
+static std::string toml_req_str(const toml::table &t, const char *key) {
+  const toml::node &n = toml_req(t, key);
+  if (auto v = n.value<std::string>())
+    return *v;
+  throw std::runtime_error(std::string("Bad string value for key: ") + key);
+}
+
+static int64_t toml_req_i64(const toml::table &t, const char *key) {
+  const toml::node &n = toml_req(t, key);
+  if (auto v = toml_opt_i64(n))
+    return *v;
+  throw std::runtime_error(std::string("Bad numeric value for key: ") + key);
+}
+
+static bool toml_req_bool(const toml::table &t, const char *key) {
+  const toml::node &n = toml_req(t, key);
+  if (auto v = toml_opt_bool(n))
+    return *v;
+  throw std::runtime_error(std::string("Bad boolean value for key: ") + key);
+}
+} // namespace
 template <>
 void ParseTestSettings<ParseType::YAML>(const std::string_view &sv,
                                         Testcases &tc) {
-  YAML::Node node = YAML::Load(std::string(sv)), info = node["ExamInformation"],
-             subtestcases = info["TestCase"];
+  YAML::Node node = YAML::Load(std::string(sv));
+  YAML::Node info = node["ExamInformation"];
+  if (!info)
+    throw std::runtime_error("Missing ExamInformation");
+  YAML::Node subtestcases = info["TestCase"];
+
+  // Tolerant accessors: Themis YAML quotes scalars ('false', '1'), which
+  // strict as<bool>/as<int> reject. Missing required keys throw so the
+  // auto-detect fallback keeps working.
+  auto ys = [](const YAML::Node &n, const char *k) -> std::string {
+    const YAML::Node v = n[k];
+    if (!v)
+      throw std::runtime_error(std::string("Missing key: ") + k);
+    try {
+      return v.as<std::string>();
+    } catch (...) {
+      throw std::runtime_error(std::string("Bad string value for key: ") + k);
+    }
+  };
+  auto yb = [](const YAML::Node &n, const char *k) -> bool {
+    const YAML::Node v = n[k];
+    if (!v)
+      throw std::runtime_error(std::string("Missing key: ") + k);
+    try {
+      return v.as<bool>();
+    } catch (...) {
+    }
+    try {
+      std::string s = lower_copy(v.as<std::string>());
+      if (s == "true" || s == "1")
+        return true;
+      if (s == "false" || s == "0")
+        return false;
+    } catch (...) {
+    }
+    throw std::runtime_error(std::string("Bad boolean value for key: ") + k);
+  };
+  auto yf = [](const YAML::Node &n, const char *k, float def,
+               bool required) -> float {
+    const YAML::Node v = n[k];
+    if (!v) {
+      if (required)
+        throw std::runtime_error(std::string("Missing key: ") + k);
+      return def;
+    }
+    try {
+      return v.as<float>();
+    } catch (...) {
+    }
+    try {
+      return std::stof(v.as<std::string>());
+    } catch (...) {
+    }
+    if (!required)
+      return def;
+    throw std::runtime_error(std::string("Bad numeric value for key: ") + k);
+  };
+  auto yi = [](const YAML::Node &n, const char *k, int def,
+               bool required) -> int {
+    const YAML::Node v = n[k];
+    if (!v) {
+      if (required)
+        throw std::runtime_error(std::string("Missing key: ") + k);
+      return def;
+    }
+    try {
+      return v.as<int>();
+    } catch (...) {
+    }
+    try {
+      return std::stoi(v.as<std::string>());
+    } catch (...) {
+    }
+    if (!required)
+      return def;
+    throw std::runtime_error(std::string("Bad numeric value for key: ") + k);
+  };
   /*
 e.g.
 ```yaml
@@ -29,32 +260,41 @@ ExamInformation:
   MemoryLimit: '1024'
 ```
   */
-  tc.Name = info["Name"].as<string>();
-  tc.InputFile = info["InputFile"].as<string>();
-  tc.OutputFile = info["OutputFile"].as<string>();
-  tc.UseStdIn = info["UseStdIn"].as<bool>();
-  tc.UseStdOut = info["UseStdOut"].as<bool>();
-  tc.Mark = info["Mark"].as<float>();
-  tc.MemoryLimit = info["MemoryLimit"].as<int>();
-  tc.TimeLimit = info["TimeLimit"].as<float>();
-  tc.EvaluatorName = info["EvaluatorName"].as<string>();
-  if (subtestcases && subtestcases.IsSequence())
-    for (YAML::Node test : subtestcases) {
-      Subtest _test;
-      _test.Name = test["Name"].as<string>();
-      _test.Mark = test["Mark"].as<float>();
-      _test.TimeLimit = test["TimeLimit"].as<float>();
-      _test.MemoryLimit = test["MemoryLimit"].as<int>();
-      tc.subtests.push_back(std::move(_test));
+  tc.Name = ys(info, "Name");
+  tc.InputFile = ys(info, "InputFile");
+  tc.OutputFile = ys(info, "OutputFile");
+  tc.UseStdIn = yb(info, "UseStdIn");
+  tc.UseStdOut = yb(info, "UseStdOut");
+  tc.Mark = yf(info, "Mark", 1.0f, true);
+  tc.MemoryLimit = yi(info, "MemoryLimit", 1024, true);
+  tc.TimeLimit = yf(info, "TimeLimit", 1.0f, true);
+  tc.EvaluatorName = ys(info, "EvaluatorName");
+  auto one_subtest = [&](const YAML::Node &test) {
+    Subtest _test;
+    _test.Name = ys(test, "Name");
+    _test.Mark = yf(test, "Mark", -1.0f, false);
+    _test.TimeLimit = yf(test, "TimeLimit", -1.0f, false);
+    _test.MemoryLimit = yi(test, "MemoryLimit", -1, false);
+    tc.subtests.push_back(std::move(_test));
+  };
+  if (subtestcases) {
+    if (subtestcases.IsSequence()) {
+      for (YAML::Node test : subtestcases)
+        one_subtest(test);
+    } else if (subtestcases.IsMap()) {
+      one_subtest(subtestcases); // single-object form, like the JSON dialect
     }
+  }
 }
 namespace {
 // impl detail for XML low-level parsing
 
 static bool attr_bool(const tinyxml2::XMLElement *e, const char *name,
                       bool def = false) {
-  if (const char *v = e->Attribute(name))
-    return strcmp(v, "true") == 0 || strcmp(v, "1") == 0;
+  if (const char *v = e->Attribute(name)) {
+    std::string s = lower_copy(v);
+    return s == "true" || s == "1";
+  }
   return def;
 }
 
@@ -150,26 +390,42 @@ void ParseTestSettings<ParseType::JSON>(const std::string_view &sv,
   */
   auto j = nlohmann::json::parse(sv);
 
-  auto &info = j.at("ExamInformation");
+  if (!j.is_object() || !j.contains("ExamInformation"))
+    throw std::runtime_error("Missing ExamInformation");
+  const auto &info = j.at("ExamInformation");
+  if (!info.is_object())
+    throw std::runtime_error("Bad ExamInformation");
 
-  tc.Name = info.at("Name").get<std::string>();
-  tc.InputFile = info.at("InputFile").get<std::string>();
-  tc.OutputFile = info.at("OutputFile").get<std::string>();
-  tc.UseStdIn = info.at("UseStdIn").get<bool>();
-  tc.UseStdOut = info.at("UseStdOut").get<bool>();
-  tc.Mark = info.at("Mark").get<float>();
-  tc.TimeLimit = info.at("TimeLimit").get<float>();
-  tc.MemoryLimit = info.at("MemoryLimit").get<int>();
-  tc.EvaluatorName = info.at("EvaluatorName").get<std::string>();
+  tc.Name = json_str(info, "Name");
+  tc.InputFile = json_str(info, "InputFile");
+  tc.OutputFile = json_str(info, "OutputFile");
+  tc.UseStdIn = json_bool(info, "UseStdIn", false);
+  tc.UseStdOut = json_bool(info, "UseStdOut", false);
+  tc.Mark = json_float(info, "Mark", 1.0f);
+  tc.TimeLimit = json_float(info, "TimeLimit", 1.0f);
+  tc.MemoryLimit = json_int(info, "MemoryLimit", 1024);
+  tc.EvaluatorName = json_str(info, "EvaluatorName");
+  if (tc.Name.empty() || tc.EvaluatorName.empty())
+    throw std::runtime_error("Missing required ExamInformation fields");
 
+  auto one_subtest = [&](const nlohmann::json &t) {
+    if (!t.is_object())
+      throw std::runtime_error("Bad TestCase entry");
+    Subtest st;
+    st.Name = json_str(t, "Name");
+    st.Mark = json_float(t, "Mark", -1.0f);
+    st.TimeLimit = json_float(t, "TimeLimit", -1.0f);
+    st.MemoryLimit = json_int(t, "MemoryLimit", -1);
+    tc.subtests.push_back(st);
+  };
   if (info.contains("TestCase")) {
     const auto &t = info.at("TestCase");
-    Subtest st;
-    st.Name = t.at("Name").get<std::string>();
-    st.Mark = t.at("Mark").get<float>();
-    st.TimeLimit = t.at("TimeLimit").get<float>();
-    st.MemoryLimit = t.at("MemoryLimit").get<int>();
-    tc.subtests.push_back(st);
+    if (t.is_array()) {
+      for (const auto &n : t)
+        one_subtest(n);
+    } else {
+      one_subtest(t); // single-object form
+    }
   }
 }
 
@@ -203,23 +459,15 @@ void ParseTestSettings<ParseType::TOML>(const std::string_view &sv,
   if (!info)
     throw std::runtime_error("Missing [ExamInformation]");
 
-  auto req = [&](const char *key) -> const toml::node & {
-    const toml::node *n = info->get(key);
-    if (!n)
-      throw std::runtime_error(std::string("Missing key: ") + key);
-    return *n;
-  };
-
-  tc.Name = req("Name").value<std::string>().value();
-  tc.InputFile = req("InputFile").value<std::string>().value();
-  tc.OutputFile = req("OutputFile").value<std::string>().value();
-  tc.UseStdIn = req("UseStdIn").value<bool>().value();
-  tc.UseStdOut = req("UseStdOut").value<bool>().value();
-  tc.Mark = static_cast<float>(req("Mark").value<int64_t>().value());
-  tc.TimeLimit = static_cast<float>(req("TimeLimit").value<int64_t>().value());
-  tc.MemoryLimit =
-      static_cast<int>(req("MemoryLimit").value<int64_t>().value());
-  tc.EvaluatorName = req("EvaluatorName").value<std::string>().value();
+  tc.Name = toml_req_str(*info, "Name");
+  tc.InputFile = toml_req_str(*info, "InputFile");
+  tc.OutputFile = toml_req_str(*info, "OutputFile");
+  tc.UseStdIn = toml_req_bool(*info, "UseStdIn");
+  tc.UseStdOut = toml_req_bool(*info, "UseStdOut");
+  tc.Mark = static_cast<float>(toml_req_i64(*info, "Mark"));
+  tc.TimeLimit = static_cast<float>(toml_req_i64(*info, "TimeLimit"));
+  tc.MemoryLimit = static_cast<int>(toml_req_i64(*info, "MemoryLimit"));
+  tc.EvaluatorName = toml_req_str(*info, "EvaluatorName");
 
   if (const toml::node *tc_node = info->get("TestCase")) {
     if (auto arr = tc_node->as_array()) {
@@ -228,14 +476,22 @@ void ParseTestSettings<ParseType::TOML>(const std::string_view &sv,
         if (!t)
           continue;
 
-        // Guarded accessors: a missing key must not null-deref.
+        // Tolerant accessors: missing keys inherit (-1/"").
         auto get_str = [&](const char *key) -> std::string {
           const toml::node *kn = t->get(key);
-          return kn ? kn->value<std::string>().value_or("") : "";
+          if (!kn)
+            return "";
+          if (auto v = kn->value<std::string>())
+            return *v;
+          return "";
         };
         auto get_i64 = [&](const char *key) -> int64_t {
           const toml::node *kn = t->get(key);
-          return kn ? kn->value<int64_t>().value_or(-1) : -1;
+          if (!kn)
+            return -1;
+          if (auto v = toml_opt_i64(*kn))
+            return *v;
+          return -1;
         };
 
         Subtest st;
@@ -388,15 +644,46 @@ void ParseGlobalOptions<ParseType::YAML>(const std::string_view &sv,
   // throwing on undefined nodes.
   auto gs = [](const YAML::Node &n, const char *k) -> std::string {
     const YAML::Node v = n[k];
-    return v ? v.as<std::string>() : "";
+    if (!v)
+      return "";
+    try {
+      return v.as<std::string>();
+    } catch (...) {
+      return "";
+    }
   };
   auto gb = [](const YAML::Node &n, const char *k, bool def) -> bool {
     const YAML::Node v = n[k];
-    return v ? v.as<bool>() : def;
+    if (!v)
+      return def;
+    try {
+      return v.as<bool>();
+    } catch (...) {
+    }
+    // Quoted booleans ('false') are strings to strict as<bool>.
+    try {
+      std::string s = lower_copy(v.as<std::string>());
+      if (s == "true" || s == "1")
+        return true;
+      if (s == "false" || s == "0")
+        return false;
+    } catch (...) {
+    }
+    return def;
   };
   auto gi = [](const YAML::Node &n, const char *k, int def) -> int {
     const YAML::Node v = n[k];
-    return v ? v.as<int>() : def;
+    if (!v)
+      return def;
+    try {
+      return v.as<int>();
+    } catch (...) {
+    }
+    try {
+      return std::stoi(v.as<std::string>());
+    } catch (...) {
+    }
+    return def;
   };
 
   auto tc = root["ThemisConfiguration"];
@@ -632,20 +919,37 @@ void ParseGlobalOptions<ParseType::JSON>(const std::string_view &text,
   }
   */
   nlohmann::json j = nlohmann::json::parse(text);
+  if (!j.is_object())
+    throw std::runtime_error("Not a global configuration document");
+
+  // Accept the documented wrapper as well as bare sections.
+  const nlohmann::json *root = &j;
+  if (j.contains("ThemisConfiguration") &&
+      j["ThemisConfiguration"].is_object())
+    root = &j["ThemisConfiguration"];
+  else if (j.contains("Configuration") && j["Configuration"].is_object())
+    root = &j["Configuration"];
+  const auto &cfg = *root;
+
+  if (!cfg.contains("CompilerConfigurations") && !cfg.contains("Environment"))
+    throw std::runtime_error("Not a global configuration document");
 
   // CompilerConfigurations
-  if (j.contains("CompilerConfigurations")) {
-    const auto &cc = j["CompilerConfigurations"];
+  if (cfg.contains("CompilerConfigurations") &&
+      cfg["CompilerConfigurations"].is_object()) {
+    const auto &cc = cfg["CompilerConfigurations"];
 
-    out.compiler.identifier = cc.value("Identifier", "");
+    out.compiler.identifier = json_str(cc, "Identifier");
 
     out.compiler.items.clear();
 
     if (cc.contains("Item") && cc["Item"].is_array()) {
       for (const auto &item : cc["Item"]) {
+        if (!item.is_object())
+          continue;
         CompilerItem ci;
-        ci.ext = item.value("ext", "");
-        ci.cmd = item.value("cmd", "");
+        ci.ext = json_str(item, "ext");
+        ci.cmd = json_str(item, "cmd");
 
         out.compiler.items.push_back(std::move(ci));
       }
@@ -653,23 +957,23 @@ void ParseGlobalOptions<ParseType::JSON>(const std::string_view &text,
   }
 
   // Environment
-  if (j.contains("Environment")) {
-    const auto &env = j["Environment"];
+  if (cfg.contains("Environment") && cfg["Environment"].is_object()) {
+    const auto &env = cfg["Environment"];
     auto &e = out.environment;
 
-    e.identifier = env.value("Identifier", "");
-    e.submitDir = env.value("SubmitDir", "");
-    e.decompressDir = env.value("DecompressDir", "");
-    e.contestHouse = env.value("ContestHouse", "");
-    e.adminUserName = env.value("AdminUserName", "");
-    e.adminPassword = env.value("AdminPassword", "");
-    e.adminDomain = env.value("AdminDomain", "");
-    e.lastExamDir = env.value("LastExamDir", "");
-    e.lastContestantDir = env.value("LastContestantDir", "");
+    e.identifier = json_str(env, "Identifier");
+    e.submitDir = json_str(env, "SubmitDir");
+    e.decompressDir = json_str(env, "DecompressDir");
+    e.contestHouse = json_str(env, "ContestHouse");
+    e.adminUserName = json_str(env, "AdminUserName");
+    e.adminPassword = json_str(env, "AdminPassword");
+    e.adminDomain = json_str(env, "AdminDomain");
+    e.lastExamDir = json_str(env, "LastExamDir");
+    e.lastContestantDir = json_str(env, "LastContestantDir");
 
-    e.activeSecurity = env.value("ActiveSecurity", false);
-    e.examEditAction = env.value("ExamEditAction", 0);
-    e.toolBarVisible = env.value("ToolBarVisible", true);
+    e.activeSecurity = json_bool(env, "ActiveSecurity", false);
+    e.examEditAction = json_int(env, "ExamEditAction", 0);
+    e.toolBarVisible = json_bool(env, "ToolBarVisible", true);
   }
 }
 
@@ -683,41 +987,71 @@ template <typename Fn> static bool try_parse(const std::string_view sv, Fn fn) {
 }
 
 void parseGlobalSettingsFormat(const std::string_view sv, Configuration &tc) {
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseGlobalOptions<ParseType::YAML>(s, tc);
-      }))
-    return;
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseGlobalOptions<ParseType::JSON>(s, tc);
-      }))
-    return;
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseGlobalOptions<ParseType::XML>(s, tc);
-      }))
-    return;
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseGlobalOptions<ParseType::TOML>(s, tc);
-      }))
-    return;
+  // Each attempt parses into a temporary: a failed parser must not leave
+  // partial items behind for the successful one to inherit. Trial order is
+  // sniffed ('<' XML, '{' JSON) because every JSON document is also valid
+  // YAML and would otherwise be misread by the YAML parser first.
+  using Fn = void (*)(const std::string_view &, Configuration &);
+  std::vector<Fn> order;
+  switch (sniff_format(sv)) {
+  case '<':
+    order = {&ParseGlobalOptions<ParseType::XML>,
+             &ParseGlobalOptions<ParseType::YAML>,
+             &ParseGlobalOptions<ParseType::JSON>,
+             &ParseGlobalOptions<ParseType::TOML>};
+    break;
+  case '{':
+    order = {&ParseGlobalOptions<ParseType::JSON>,
+             &ParseGlobalOptions<ParseType::YAML>,
+             &ParseGlobalOptions<ParseType::XML>,
+             &ParseGlobalOptions<ParseType::TOML>};
+    break;
+  default:
+    order = {&ParseGlobalOptions<ParseType::YAML>,
+             &ParseGlobalOptions<ParseType::TOML>,
+             &ParseGlobalOptions<ParseType::JSON>,
+             &ParseGlobalOptions<ParseType::XML>};
+    break;
+  }
+  for (Fn f : order) {
+    Configuration tmp;
+    if (try_parse(sv, [&](std::string_view s) { f(s, tmp); })) {
+      tc = std::move(tmp);
+      return;
+    }
+  }
   throw std::runtime_error("File format not implemented");
 }
 
 void parseSettingsFormat(const std::string_view sv, Testcases &tc) {
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseTestSettings<ParseType::YAML>(s, tc);
-      }))
-    return;
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseTestSettings<ParseType::JSON>(s, tc);
-      }))
-    return;
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseTestSettings<ParseType::XML>(s, tc);
-      }))
-    return;
-  if (try_parse(sv, [&](std::string_view s) {
-        ParseTestSettings<ParseType::TOML>(s, tc);
-      }))
-    return;
+  using Fn = void (*)(const std::string_view &, Testcases &);
+  std::vector<Fn> order;
+  switch (sniff_format(sv)) {
+  case '<':
+    order = {&ParseTestSettings<ParseType::XML>,
+             &ParseTestSettings<ParseType::YAML>,
+             &ParseTestSettings<ParseType::JSON>,
+             &ParseTestSettings<ParseType::TOML>};
+    break;
+  case '{':
+    order = {&ParseTestSettings<ParseType::JSON>,
+             &ParseTestSettings<ParseType::YAML>,
+             &ParseTestSettings<ParseType::XML>,
+             &ParseTestSettings<ParseType::TOML>};
+    break;
+  default:
+    order = {&ParseTestSettings<ParseType::YAML>,
+             &ParseTestSettings<ParseType::TOML>,
+             &ParseTestSettings<ParseType::JSON>,
+             &ParseTestSettings<ParseType::XML>};
+    break;
+  }
+  for (Fn f : order) {
+    Testcases tmp;
+    if (try_parse(sv, [&](std::string_view s) { f(s, tmp); })) {
+      tc = std::move(tmp);
+      return;
+    }
+  }
   throw std::runtime_error("File format not implemented");
 }

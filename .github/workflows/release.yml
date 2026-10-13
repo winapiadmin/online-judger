@@ -13,6 +13,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     strategy:
@@ -48,7 +52,7 @@ jobs:
           aqtsource: 'git+https://github.com/miurahr/aqtinstall.git@refs/pull/1000/head'
 
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_GUI=ON
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=ON
 
       - name: Build
         run: cmake --build build
@@ -73,7 +77,7 @@ jobs:
           bash tests/e2e_test.sh "$BIN" build
 
       - name: Install
-        run: cmake --install build --prefix publish --config Debug
+        run: cmake --install build --prefix publish --config Release
 
       - name: Zip artifacts
         shell: bash

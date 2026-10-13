@@ -7,6 +7,8 @@ on:
 
 jobs:
   format:
+    # The push below would otherwise retrigger this workflow forever.
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -30,6 +32,6 @@ jobs:
           if ! git diff --quiet; then
             git config user.email "actions@github.com"
             git config user.name "GitHub Actions"
-            git commit -am "Normalize line endings and apply clang-format"
+            git commit -am "Normalize line endings and apply clang-format [skip ci]"
             git push
           fi

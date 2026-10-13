@@ -74,5 +74,8 @@ std::vector<CompilerItem>
 fromGuiCompilers(const std::vector<GuiCompilerItem> &items);
 
 // Build a Testcases map from the tests directory (for judge()).
+// judgersDir locates the evaluator libraries for platform-name resolution
+// (see resolveEvaluatorName); empty keeps the mapped name unchecked.
 std::unordered_map<std::string, Testcases>
-buildTestcasesMap(const std::filesystem::path &testsDir);
+buildTestcasesMap(const std::filesystem::path &testsDir,
+                  const std::filesystem::path &judgersDir = {});

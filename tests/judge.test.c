@@ -21,9 +21,10 @@ int main(void) {
   double s;
   char c[8192];
 
-  // 1. identical bytes -> PASSED
-  run("binary\x00data\x01\x02", 13, "binary\x00data\x01\x02", 13, &s, c,
-      sizeof(c));
+  // 1. identical bytes (incl. an embedded NUL) -> PASSED.
+  // NOTE: octal escapes, not \x00: hex escapes greedily consume following
+  // hex digits ("\x00da" is U+00DA, not NUL + "da").
+  run("binary\0data\1\2", 13, "binary\0data\1\2", 13, &s, c, sizeof(c));
   CHECK(s == 1.0, "identical binary content should score 1.0");
   CHECK(strstr(c, "PASSED") != NULL, "PASSED verdict missing");
 

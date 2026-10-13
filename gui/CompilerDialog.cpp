@@ -66,8 +66,10 @@ CompilerDialog::CompilerDialog(std::vector<GuiCompilerItem> &compilers,
   connect(btnBox, &QDialogButtonBox::accepted, this, [this]() {
     m_compilers.clear();
     for (int i = 0; i < m_table->rowCount(); ++i) {
+      const QTableWidgetItem *ext = m_table->item(i, 0);
+      const QTableWidgetItem *cmd = m_table->item(i, 1);
       m_compilers.push_back(
-          {m_table->item(i, 0)->text(), m_table->item(i, 1)->text()});
+          {ext ? ext->text() : QString(), cmd ? cmd->text() : QString()});
     }
     accept();
   });

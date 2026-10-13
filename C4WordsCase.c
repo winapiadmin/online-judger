@@ -134,31 +134,40 @@ static void skip_bom(FILE *f) {
 }
 
 // ------------------------------------------------------------
-// Read next word (ASCII safe), case-sensitive
+// First character of the next word, or EOF when the stream is exhausted.
 // ------------------------------------------------------------
-static int next_word(FILE *f, char *buf, int cap) {
+static int word_start(FILE *f) {
   int c;
-
-  /* skip whitespace */
   do {
     c = fgetc(f);
     if (c == EOF)
-      return 0;
+      return EOF;
   } while (isspace((unsigned char)c));
+  return c;
+}
 
-  int i = 0;
-
-  /* read word */
-  while (c != EOF && !isspace((unsigned char)c)) {
-
-    if (i < cap - 1)
-      buf[i++] = (char)c;
-
-    c = fgetc(f);
+// ------------------------------------------------------------
+// Compare the word starting with ca/cb (both non-whitespace, non-EOF).
+// Case-sensitive. Advances both streams past the word.
+// Returns 1 when both words end together, 0 on any difference.
+// Words are streamed character by character: there is no length limit,
+// so over-long words can never compare equal by truncation.
+// ------------------------------------------------------------
+static int compare_word(FILE *a, FILE *b, int ca, int cb) {
+  for (;;) {
+    if (ca != cb)
+      return 0;
+    ca = fgetc(a);
+    cb = fgetc(b);
+    {
+      int ea = (ca == EOF || isspace((unsigned char)ca));
+      int eb = (cb == EOF || isspace((unsigned char)cb));
+      if (ea && eb)
+        return 1;
+      if (ea || eb)
+        return 0;
+    }
   }
-
-  buf[i] = 0;
-  return 1;
 }
 
 // ------------------------------------------------------------
@@ -180,27 +189,20 @@ static int compare_word_files(const str *f1, const str *f2) {
   skip_bom(a);
   skip_bom(b);
 
-  char wa[4096];
-  char wb[4096];
-
-  while (1) {
-
-    int ha = next_word(a, wa, sizeof(wa));
-    int hb = next_word(b, wb, sizeof(wb));
-
-    if (!ha && !hb)
+  int result = 1;
+  while (result == 1) {
+    int ca = word_start(a);
+    int cb = word_start(b);
+    if (ca == EOF || cb == EOF) {
+      result = (ca == EOF && cb == EOF) ? 1 : 0;
       break;
-
-    if (ha != hb || strcmp(wa, wb) != 0) {
-      fclose(a);
-      fclose(b);
-      return 0;
     }
+    result = compare_word(a, b, ca, cb);
   }
 
   fclose(a);
   fclose(b);
-  return 1;
+  return result;
 }
 
 // ------------------------------------------------------------
@@ -255,6 +257,8 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 
   const size_t BUF = 131072;
   str *comments = (str *)calloc(BUF, sizeof(str));
+  if (!comments)
+    return 0.0;
 
   str **files = str_split(testOutputs, STR_LIT('|'));
 
@@ -273,6 +277,7 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 #define V_MATCH_STR STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n")
 #define V_MISMATCH_STR                                                         \
   STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n")
+#define V_ERROR_STR STR_LIT("ERROR\n")
 #else
 #define V_MISSING_STR                                                          \
   "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n"
@@ -286,28 +291,35 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 
   for (int i = 0; files[i]; ++i) {
 
-    if (join_path(exp, 1024, testsDir, files[i]) &&
-        join_path(act, 1024, contestantsDir, files[i])) {
+    if (!join_path(exp, 1024, testsDir, files[i]) ||
+        !join_path(act, 1024, contestantsDir, files[i])) {
+      str_cat_s(comments, BUF, V_ERROR_STR);
+      free(files[i]);
+      continue;
+    }
 
-      if (!file_exists(act)) {
-        /* Contestant produced no result file */
-        str_cat_s(comments, BUF, V_MISSING_STR);
-        free(files[i]);
-        continue;
-      }
+    if (!file_exists(act)) {
+      /* Contestant produced no result file */
+      str_cat_s(comments, BUF, V_MISSING_STR);
+      free(files[i]);
+      continue;
+    }
 
-      int v = compare_word_files(exp, act);
+    int v = compare_word_files(exp, act);
 
-      if (v == 1) {
+    if (v == 1) {
 
-        str_cat_s(comments, BUF, V_MATCH_STR);
+      str_cat_s(comments, BUF, V_MATCH_STR);
 
-        score += 1.0;
+      score += 1.0;
 
-      } else if (v == 0) {
+    } else if (v == 0) {
 
-        str_cat_s(comments, BUF, V_MISMATCH_STR);
-      }
+      str_cat_s(comments, BUF, V_MISMATCH_STR);
+
+    } else {
+
+      str_cat_s(comments, BUF, V_ERROR_STR);
     }
 
     free(files[i]);
@@ -319,6 +331,12 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 
   return score;
 }
+
+// ------------------------------------------------------------
+// Evaluator-side deallocator for comment buffers (see JudgeAPI.h).
+// ------------------------------------------------------------
+DLL_EXPORT
+void API_CALL FreeJudgeComment(void *comment) { free(comment); }
 
 #ifdef __cplusplus
 }

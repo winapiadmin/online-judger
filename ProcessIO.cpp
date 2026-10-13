@@ -1,4 +1,6 @@
 #include "ProcessIO.h"
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <iostream>
 #include <mutex>
@@ -9,6 +11,7 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <sys/resource.h>
 #include <sys/time.h>
@@ -92,6 +95,10 @@ std::wstring quote_arg(const std::wstring &a) {
 ProcessResult run_command(const std::vector<std::string> &command,
                           const fs::path &cwd, const std::string &stdin_data,
                           const float time_limit_sec, const int maxMemoryMB) {
+  if (command.empty())
+    throw CPError<CPErrors::IE>("empty command");
+  if (time_limit_sec <= 0)
+    throw CPError<CPErrors::IE>("non-positive time limit");
   const std::size_t maxOutputBytes = (std::size_t)32 * 1024 * 1024;
 
   auto start_wall = std::chrono::high_resolution_clock::now();
@@ -164,38 +171,73 @@ ProcessResult run_command(const std::vector<std::string> &command,
   if (!created)
     throw CPError<CPErrors::IE>("failed to spawn process");
 
-  // Enforce the memory limit via a job object when a positive cap is given.
+  // Own the process/thread handles immediately: every throw path below must
+  // not leak them nor leave a suspended child behind.
+  HandleGuard procGuard(pi.hProcess), threadGuard(pi.hThread);
+
+  // Attach the child to a job object so the whole process tree (contestant
+  // programs may spawn grandchildren) can be terminated together.
+  // KILL_ON_JOB_CLOSE guarantees no orphan survives if we exit early.
+  // When maxMemoryMB > 0 the job additionally caps committed memory.
   HandleGuard jobGuard;
-  if (maxMemoryMB > 0) {
-    jobGuard.h = CreateJobObjectW(nullptr, nullptr);
+  jobGuard.h = CreateJobObjectW(nullptr, nullptr);
+  if (!jobGuard.h)
+    throw CPError<CPErrors::IE>("failed to create job object");
+  {
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
-    jeli.ProcessMemoryLimit = (SIZE_T)maxMemoryMB << 20;
-    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
-    if (!jobGuard.h ||
-        !SetInformationJobObject(jobGuard.h, JobObjectExtendedLimitInformation,
+    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (maxMemoryMB > 0) {
+      jeli.ProcessMemoryLimit = (SIZE_T)maxMemoryMB << 20;
+      jeli.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    }
+    if (!SetInformationJobObject(jobGuard.h, JobObjectExtendedLimitInformation,
                                  &jeli, sizeof(jeli)) ||
         !AssignProcessToJobObject(jobGuard.h, pi.hProcess))
-      throw CPError<CPErrors::IE>("failed to apply memory limit");
+      throw CPError<CPErrors::IE>("failed to apply job limits");
   }
 
   if (ResumeThread(pi.hThread) == (DWORD)-1)
     throw CPError<CPErrors::IE>("failed to resume child process");
 
-  HandleGuard procGuard(pi.hProcess), threadGuard(pi.hThread);
+  // Kill the whole job tree when possible; fall back to the direct child.
+  auto killTree = [&] {
+    if (jobGuard.h)
+      TerminateJobObject(jobGuard.h, 1);
+    else
+      TerminateProcess(pi.hProcess, 1);
+  };
 
-  // The child owns its ends now.
-  inRd.release();
-  outWr.release();
-  errWr.release();
+  // Close our copies of the child's pipe ends; the child owns its ends now.
+  // These must be closed, not merely released: holding the write ends open
+  // would leak handles every run and prevent EOF on outRd/errRd.
+  if (inRd.h) {
+    CloseHandle(inRd.h);
+    inRd.h = nullptr;
+  }
+  if (outWr.h) {
+    CloseHandle(outWr.h);
+    outWr.h = nullptr;
+  }
+  if (errWr.h) {
+    CloseHandle(errWr.h);
+    errWr.h = nullptr;
+  }
 
   // Feed stdin from a helper thread; a blocking WriteFile here would deadlock
   // against a child that fills its stdout pipe before reading all input.
-  std::thread stdinWriter([&inWr, &stdin_data] {
-    DWORD total = 0;
-    while (total < stdin_data.size()) {
+  // Writes go out in small chunks so the kill paths below can stop the
+  // writer promptly via cancelWriter instead of joining a stuck thread.
+  std::atomic<bool> cancelWriter{false};
+  std::thread stdinWriter([&] {
+    size_t total = 0;
+    while (total < stdin_data.size() && !cancelWriter.load()) {
+      DWORD chunk =
+          (DWORD)min<size_t>(stdin_data.size() - total, (size_t)4096);
       DWORD written = 0;
-      if (!WriteFile(inWr.h, stdin_data.data() + total,
-                     (DWORD)(stdin_data.size() - total), &written, nullptr))
+      if (!WriteFile(inWr.h, stdin_data.data() + total, chunk, &written,
+                     nullptr))
+        break;
+      if (written == 0)
         break;
       total += written;
     }
@@ -219,45 +261,40 @@ ProcessResult run_command(const std::vector<std::string> &command,
   std::string out_buf, err_buf;
   char buffer[4096];
 
+  // Drain whatever is currently available on a pipe. Returns false when the
+  // output limit is exceeded (caller kills the tree and throws OLE).
+  auto drainPipe = [&](HANDLE h, std::string &into) -> bool {
+    DWORD avail = 0;
+    while (PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr) &&
+           avail > 0) {
+      DWORD nread = 0;
+      if (!ReadFile(h, buffer, min<DWORD>((DWORD)sizeof(buffer), avail),
+                    &nread, nullptr) ||
+          nread == 0)
+        break;
+      into.append(buffer, nread);
+      if (into.size() > maxOutputBytes)
+        return false;
+    }
+    return true;
+  };
+  auto killAndJoin = [&](auto makeError) {
+    killTree();
+    cancelWriter.store(true);
+    Sleep(1000);
+    joinStdin();
+    throw makeError();
+  };
+
   while (true) {
 
     // Wait up to 10ms for process exit
     DWORD waitResult = WaitForSingleObject(pi.hProcess, 10);
 
-    // Drain stdout
-    DWORD avail = 0;
-    while (PeekNamedPipe(outRd.h, nullptr, 0, nullptr, &avail, nullptr) &&
-           avail > 0) {
-      DWORD nread;
-      if (!ReadFile(outRd.h, buffer, min<DWORD>((DWORD)sizeof(buffer), avail),
-                    &nread, nullptr))
-        break;
-
-      out_buf.append(buffer, nread);
-      if (out_buf.size() > maxOutputBytes) {
-        TerminateProcess(pi.hProcess, 1);
-        Sleep(1000);
-        joinStdin();
-        throw CPError<CPErrors::OLE>();
-      }
-    }
-
-    // Drain stderr
-    while (PeekNamedPipe(errRd.h, nullptr, 0, nullptr, &avail, nullptr) &&
-           avail > 0) {
-      DWORD nread;
-      if (!ReadFile(errRd.h, buffer, min<DWORD>((DWORD)sizeof(buffer), avail),
-                    &nread, nullptr))
-        break;
-
-      err_buf.append(buffer, nread);
-      if (err_buf.size() > maxOutputBytes) {
-        TerminateProcess(pi.hProcess, 1);
-        Sleep(1000);
-        joinStdin();
-        throw CPError<CPErrors::OLE>();
-      }
-    }
+    if (!drainPipe(outRd.h, out_buf))
+      killAndJoin([] { return CPError<CPErrors::OLE>(); });
+    if (!drainPipe(errRd.h, err_buf))
+      killAndJoin([] { return CPError<CPErrors::OLE>(); });
 
     // Check CPU time
     FILETIME ftCreate, ftExit, ftKernel, ftUser;
@@ -271,27 +308,30 @@ ProcessResult run_command(const std::vector<std::string> &command,
 
     float cpu_secs = (float)((k.QuadPart + u.QuadPart) * 1e-7);
 
-    if (cpu_secs > time_limit_sec) {
-      TerminateProcess(pi.hProcess, 1);
-      Sleep(1000);
-      joinStdin();
-      throw CPError<CPErrors::TLE>();
-    }
+    if (cpu_secs > time_limit_sec)
+      killAndJoin([] { return CPError<CPErrors::TLE>(); });
 
     // Check wall time
     auto now_wall = std::chrono::high_resolution_clock::now();
     float wall_secs =
         std::chrono::duration<float>(now_wall - start_wall).count();
 
-    if (wall_secs > time_limit_sec) {
-      TerminateProcess(pi.hProcess, 1);
-      Sleep(1000);
-      joinStdin();
-      throw CPError<CPErrors::TLE>();
-    }
+    if (wall_secs > time_limit_sec)
+      killAndJoin([] { return CPError<CPErrors::TLE>(); });
 
     if (waitResult == WAIT_OBJECT_0)
       break;
+  }
+
+  // Grace drain: capture output written between the last poll and process
+  // exit. Bounded: the child is dead, so no new data can arrive.
+  for (int i = 0; i < 10; ++i) {
+    size_t before = out_buf.size() + err_buf.size();
+    if (!drainPipe(outRd.h, out_buf) || !drainPipe(errRd.h, err_buf))
+      killAndJoin([] { return CPError<CPErrors::OLE>(); });
+    if (out_buf.size() + err_buf.size() == before)
+      break;
+    Sleep(5);
   }
 
   joinStdin();
@@ -325,21 +365,40 @@ ProcessResult run_command(const std::vector<std::string> &command,
   if (pipe(stdin_pipe) < 0 || pipe(stdout_pipe) < 0 || pipe(stderr_pipe) < 0)
     throw CPError<CPErrors::IE>("pipe creation failed");
 
+  // Close-on-exec: with a multithreaded judge, unrelated fds must not leak
+  // into the contestant program (best effort; failures are non-fatal here).
+  for (int fd : {stdin_pipe[0], stdin_pipe[1], stdout_pipe[0], stdout_pipe[1],
+                 stderr_pipe[0], stderr_pipe[1]})
+    fcntl(fd, F_SETFD, FD_CLOEXEC);
+
   pid_t pid = fork();
-  if (pid < 0)
+  if (pid < 0) {
+    close(stdin_pipe[0]);
+    close(stdin_pipe[1]);
+    close(stdout_pipe[0]);
+    close(stdout_pipe[1]);
+    close(stderr_pipe[0]);
+    close(stderr_pipe[1]);
     throw CPError<CPErrors::IE>("fork failed");
+  }
 
   if (pid == 0) {
     // Child process: own process group so the parent can kill the whole tree
     setpgid(0, 0);
 
-    dup2(stdin_pipe[0], STDIN_FILENO);
-    dup2(stdout_pipe[1], STDOUT_FILENO);
-    dup2(stderr_pipe[1], STDERR_FILENO);
+    if (dup2(stdin_pipe[0], STDIN_FILENO) < 0 ||
+        dup2(stdout_pipe[1], STDOUT_FILENO) < 0 ||
+        dup2(stderr_pipe[1], STDERR_FILENO) < 0)
+      _exit(126);
 
+    // Close all original pipe ends: leftovers would leak into exec and, if
+    // inherited further, break the parent's EOF detection.
+    close(stdin_pipe[0]);
     close(stdin_pipe[1]);
     close(stdout_pipe[0]);
+    close(stdout_pipe[1]);
     close(stderr_pipe[0]);
+    close(stderr_pipe[1]);
 
     // Address-space cap; malloc/brk fail once exceeded (child gets NULL /
     // crashes instead of exhausting host memory).
@@ -360,24 +419,64 @@ ProcessResult run_command(const std::vector<std::string> &command,
     _exit(127);
   }
 
-  /* Mirror the child's setpgid so killpg() cannot race with it. */
-  setpgid(pid, pid);
+  /* Mirror the child's setpgid so killpg() cannot race with it. If the child
+     already exec'd, this fails and the child stays in our group. */
+  bool havePgroup = (setpgid(pid, pid) == 0);
+
+  // Kill the whole process group when we own it; otherwise fall back to the
+  // direct child (a failed setpgid must never spray signals at our group).
+  auto killTree = [&](int sig) {
+    if (havePgroup) {
+      if (killpg(pid, sig) == 0)
+        return;
+    }
+    kill(pid, sig);
+  };
 
   // Parent process
   close(stdin_pipe[0]);
   close(stdout_pipe[1]);
   close(stderr_pipe[1]);
 
+  // Non-blocking pipe ends: each select tick must burst-drain everything
+  // available, otherwise a chatty child outruns the 10 ms poll loop and a
+  // 32 MiB flood would take ~80 s (false wall-TLE before OLE fires). The
+  // non-blocking stdin end plus poll() below also bounds the writer thread.
+  for (int fd : {stdout_pipe[0], stderr_pipe[0], stdin_pipe[1]}) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags >= 0)
+      fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
+
   // Feed stdin from a helper thread; a blocking write here would deadlock
   // against a child that fills its stdout pipe before reading all input.
-  std::thread stdinWriter([&stdin_pipe, &stdin_data] {
+  // poll() with a cancel flag bounds the join: an orphaned grandchild that
+  // inherits the pipe without reading cannot hang us forever.
+  std::atomic<bool> cancelWriter{false};
+  std::thread stdinWriter([&] {
     size_t total = 0;
     while (total < stdin_data.size()) {
+      if (cancelWriter.load())
+        break;
+      struct pollfd pfd{stdin_pipe[1], POLLOUT, 0};
+      int pr = poll(&pfd, 1, 250);
+      if (pr < 0) {
+        if (errno == EINTR)
+          continue;
+        break;
+      }
+      if (pr == 0)
+        continue; // timeout: re-check the cancel flag
       ssize_t w = write(stdin_pipe[1], stdin_data.data() + total,
                         min(stdin_data.size() - total, (size_t)65536));
-      if (w <= 0)
-        break; // child died or closed stdin
-      total += w;
+      if (w < 0) {
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+          continue;
+        break; // EPIPE (child gone) or other error
+      }
+      if (w == 0)
+        break;
+      total += (size_t)w;
     }
     close(stdin_pipe[1]);
   });
@@ -388,18 +487,35 @@ ProcessResult run_command(const std::vector<std::string> &command,
         t->join();
     }
   } joinStdin{&stdinWriter};
+  auto killReapThrow = [&](auto makeError) {
+    killTree(SIGKILL);
+    cancelWriter.store(true);
+    waitpid(pid, nullptr, 0); // Reap zombie
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+    throw makeError();
+  };
 
   std::string out_buf, err_buf;
   char buf[4096];
   bool finished = false;
 
   auto drain_fd = [&](int fd, std::string &into) -> bool {
-    // returns false when the limit is exceeded
-    ssize_t r = read(fd, buf, sizeof(buf));
-    if (r > 0) {
-      into.append(buf, (size_t)r);
-      if (into.size() > maxOutputBytes)
-        return false;
+    // Burst until EAGAIN so one select tick drains everything available.
+    // Returns false when the output limit is exceeded.
+    for (;;) {
+      ssize_t r = read(fd, buf, sizeof(buf));
+      if (r > 0) {
+        into.append(buf, (size_t)r);
+        if (into.size() > maxOutputBytes)
+          return false;
+      } else if (r == 0) {
+        break; // all write ends closed (EOF)
+      } else {
+        if (errno == EINTR)
+          continue;
+        break; // EAGAIN: drained; other errors: stop
+      }
     }
     return true;
   };
@@ -415,28 +531,20 @@ ProcessResult run_command(const std::vector<std::string> &command,
     tv.tv_sec = 0;
     tv.tv_usec = 10000; // 10ms timeout for select
 
-    select(maxfd + 1, &fds, nullptr, nullptr, &tv);
+    int nready = select(maxfd + 1, &fds, nullptr, nullptr, &tv);
+    if (nready < 0)
+      FD_ZERO(&fds); // EINTR: fd_set undefined; re-check child below
 
     // Read from stdout
     if (FD_ISSET(stdout_pipe[0], &fds)) {
-      if (!drain_fd(stdout_pipe[0], out_buf)) {
-        killpg(pid, SIGKILL);     /* whole group: orphans die too */
-        waitpid(pid, nullptr, 0); // Reap zombie
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        throw CPError<CPErrors::OLE>();
-      }
+      if (!drain_fd(stdout_pipe[0], out_buf))
+        killReapThrow([] { return CPError<CPErrors::OLE>(); });
     }
 
     // Read from stderr
     if (FD_ISSET(stderr_pipe[0], &fds)) {
-      if (!drain_fd(stderr_pipe[0], err_buf)) {
-        killpg(pid, SIGKILL);     /* whole group: orphans die too */
-        waitpid(pid, nullptr, 0); // Reap zombie
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        throw CPError<CPErrors::OLE>();
-      }
+      if (!drain_fd(stderr_pipe[0], err_buf))
+        killReapThrow([] { return CPError<CPErrors::OLE>(); });
     }
 
     // Check if child has exited (non-blocking)
@@ -492,8 +600,10 @@ ProcessResult run_command(const std::vector<std::string> &command,
         struct timeval dtv;
         dtv.tv_sec = (long)(remaining / 1000000);
         dtv.tv_usec = (long)(remaining % 1000000);
-        select(std::max(stdout_pipe[0], stderr_pipe[0]) + 1, &drain_fds,
-               nullptr, nullptr, &dtv);
+        int drdy = select(std::max(stdout_pipe[0], stderr_pipe[0]) + 1,
+                          &drain_fds, nullptr, nullptr, &dtv);
+        if (drdy < 0)
+          FD_ZERO(&drain_fds); // EINTR: set undefined; retry until deadline
 
         if (open_out && FD_ISSET(stdout_pipe[0], &drain_fds)) {
           ssize_t r = read(stdout_pipe[0], buf, sizeof(buf));
@@ -501,8 +611,11 @@ ProcessResult run_command(const std::vector<std::string> &command,
             out_buf.append(buf, (size_t)r);
             if (out_buf.size() > maxOutputBytes)
               overflow = true;
-          } else
-            open_out = false;
+          } else if (r == 0) {
+            open_out = false; // EOF: every writer closed its end
+          }
+          // EAGAIN: a (possibly orphaned) writer is still alive; keep
+          // waiting until the deadline instead of truncating output.
         }
         if (!overflow && open_err && FD_ISSET(stderr_pipe[0], &drain_fds)) {
           ssize_t r = read(stderr_pipe[0], buf, sizeof(buf));
@@ -510,8 +623,9 @@ ProcessResult run_command(const std::vector<std::string> &command,
             err_buf.append(buf, (size_t)r);
             if (err_buf.size() > maxOutputBytes)
               overflow = true;
-          } else
+          } else if (r == 0) {
             open_err = false;
+          }
         }
       }
 
@@ -533,7 +647,8 @@ ProcessResult run_command(const std::vector<std::string> &command,
     float elapsed = std::chrono::duration<float>(now_wall - start_wall).count();
 
     if (elapsed > time_limit_sec) {
-      killpg(pid, SIGKILL);     /* whole group: orphans die too */
+      killTree(SIGKILL); /* whole group when owned: orphans die too */
+      cancelWriter.store(true);
       waitpid(pid, nullptr, 0); // Reap zombie
       close(stdout_pipe[0]);
       close(stderr_pipe[0]);

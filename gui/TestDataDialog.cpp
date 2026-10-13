@@ -178,12 +178,17 @@ void TestDataDialog::onSave() {
   m_config.mark = m_markEdit->text().toFloat();
 
   m_config.subtests.clear();
+  // Cells may be empty (user cleared them): a null item must not crash.
+  auto cellText = [&](int row, int col) -> QString {
+    const QTableWidgetItem *it = m_subtestTable->item(row, col);
+    return it ? it->text() : QString();
+  };
   for (int i = 0; i < m_subtestTable->rowCount(); ++i) {
     GuiSubtest st;
-    st.name = m_subtestTable->item(i, 0)->text();
-    st.mark = m_subtestTable->item(i, 1)->text().toFloat();
-    st.timeLimit = m_subtestTable->item(i, 2)->text().toFloat();
-    st.memoryLimit = m_subtestTable->item(i, 3)->text().toInt();
+    st.name = cellText(i, 0);
+    st.mark = cellText(i, 1).toFloat();
+    st.timeLimit = cellText(i, 2).toFloat();
+    st.memoryLimit = cellText(i, 3).toInt();
     m_config.subtests.push_back(st);
   }
 

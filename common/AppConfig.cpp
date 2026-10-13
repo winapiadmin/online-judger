@@ -14,14 +14,6 @@ namespace fs = std::filesystem;
 // Helpers
 // ============================================================
 
-static std::string readFileBytes(const fs::path &p) {
-  std::ifstream f(p, std::ios::in | std::ios::binary);
-  if (!f.is_open())
-    return {};
-  return std::string((std::istreambuf_iterator<char>(f)),
-                     std::istreambuf_iterator<char>());
-}
-
 // Transparently decompress ZLIB data. Returns raw content if not compressed.
 static std::string loadMaybeZlib(const fs::path &p) {
   std::vector<char> data = [&]() {
@@ -56,7 +48,17 @@ static std::string loadMaybeZlib(const fs::path &p) {
 // Platform paths
 // ============================================================
 
-std::string AppConfig::configPath() const { return defaultConfigPath(); }
+std::string AppConfig::configPath() const {
+  // Our own JSON config only. The Themis path is a read-only import source
+  // (see themisConfigPath): returning it here once made save() overwrite
+  // Themis XML with JSON.
+  const char *home = std::getenv("HOME");
+  if (!home)
+    home = std::getenv("USERPROFILE");
+  if (!home)
+    return "oj.cfg";
+  return (fs::path(home) / ".config" / "online-judger" / "oj.cfg").string();
+}
 
 std::string AppConfig::defaultConfigPath() {
 #ifdef _WIN32
@@ -131,7 +133,7 @@ std::vector<CompilerItem> AppConfig::defaultCompilers() {
 // ============================================================
 
 bool AppConfig::loadFromThemis(const std::string &path) {
-  std::string raw = readFileBytes(path);
+  std::string raw = loadMaybeZlib(path);
   if (raw.empty())
     return false;
 
@@ -165,26 +167,35 @@ bool AppConfig::loadFromThemis(const std::string &path) {
 // ============================================================
 
 bool AppConfig::loadFromJson(const std::string &path) {
-  std::string raw = readFileBytes(path);
+  std::string raw = loadMaybeZlib(path);
   if (raw.empty())
     return false;
 
-  auto j = nlohmann::json::parse(raw, nullptr, false);
+  nlohmann::json j;
+  try {
+    j = nlohmann::json::parse(raw);
+  } catch (...) {
+    return false;
+  }
   if (j.is_discarded() || !j.is_object())
     return false;
 
-  if (j.contains("testsPath"))
+  // Type-checked access: well-formed JSON with mistyped values (null,
+  // numbers, ...) must not throw out of load().
+  if (j.contains("testsPath") && j["testsPath"].is_string())
     m_testsPath = j["testsPath"].get<std::string>();
-  if (j.contains("submissionsPath"))
+  if (j.contains("submissionsPath") && j["submissionsPath"].is_string())
     m_submissionsPath = j["submissionsPath"].get<std::string>();
 
   if (j.contains("compilers") && j["compilers"].is_array()) {
     m_cfg.compiler.items.clear();
     for (auto &c : j["compilers"]) {
+      if (!c.is_object())
+        continue;
       CompilerItem ci;
-      if (c.contains("ext"))
+      if (c.contains("ext") && c["ext"].is_string())
         ci.ext = c["ext"].get<std::string>();
-      if (c.contains("cmd"))
+      if (c.contains("cmd") && c["cmd"].is_string())
         ci.cmd = c["cmd"].get<std::string>();
       m_cfg.compiler.items.push_back(std::move(ci));
     }
@@ -220,21 +231,30 @@ bool AppConfig::save() {
 // ============================================================
 
 bool AppConfig::load() {
-  // 1. Try Themis config (Windows: %APPDATA%/Themis.cfg)
-  std::string themis = themisConfigPath();
-  if (!themis.empty())
-    loadFromThemis(themis);
+  bool ok = true;
+  // 1. Try Themis config (Windows: %APPDATA%/Themis.cfg, read-only import)
+  try {
+    std::string themis = themisConfigPath();
+    if (!themis.empty() && !loadFromThemis(themis))
+      ok = false;
+  } catch (...) {
+    ok = false;
+  }
 
   // 2. Our JSON config (overrides compilers + provides paths)
-  std::string cfgPath = configPath();
-  if (fs::exists(cfgPath))
-    loadFromJson(cfgPath);
+  try {
+    std::string cfgPath = configPath();
+    if (fs::exists(cfgPath) && !loadFromJson(cfgPath))
+      ok = false;
+  } catch (...) {
+    ok = false;
+  }
 
   // 3. Fill defaults if no compilers loaded
   if (m_cfg.compiler.items.empty())
     m_cfg.compiler.items = defaultCompilers();
 
-  return true;
+  return ok;
 }
 
 Configuration &AppConfig::configuration() { return m_cfg; }

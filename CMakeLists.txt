@@ -39,7 +39,7 @@ if (NOT TARGET ZLIB::ZLIB)
   FetchContent_Declare(
     zlib
     GIT_REPOSITORY https://github.com/madler/zlib.git
-    GIT_TAG develop
+    GIT_TAG v1.3.1
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(zlib)
@@ -54,17 +54,21 @@ else()
   message(STATUS "Found ZLIB")
 endif()
 
-# Ensure zlib source is available for minizip (GUI needs contrib/minizip)
-FetchContent_Declare(
-  zlib_src
-  SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/zlib-src
-  GIT_REPOSITORY "https://github.com/madler/zlib.git"
-  GIT_TAG develop
-  GIT_SHALLOW TRUE
-)
-FetchContent_GetProperties(zlib_src)
-if(NOT zlib_src_POPULATED)
-  FetchContent_Populate(zlib_src)
+# Ensure zlib source is available for minizip (GUI needs contrib/minizip).
+# Only populated when the GUI is enabled, so plain CLI builds pay no cost.
+option(BUILD_GUI "Build Qt GUI application" OFF)
+if(BUILD_GUI)
+  FetchContent_Declare(
+    zlib_src
+    SOURCE_DIR ${CMAKE_BINARY_DIR}/_deps/zlib-src
+    GIT_REPOSITORY "https://github.com/madler/zlib.git"
+    GIT_TAG v1.3.1
+    GIT_SHALLOW TRUE
+  )
+  FetchContent_GetProperties(zlib_src)
+  if(NOT zlib_src_POPULATED)
+    FetchContent_Populate(zlib_src)
+  endif()
 endif()
 
 # ---- CLI11 ----
@@ -75,7 +79,7 @@ if (NOT CLI11_FOUND)
   FetchContent_Declare(
     CLI11
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG main
+    GIT_TAG v2.4.2
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(CLI11)
@@ -91,7 +95,7 @@ if (NOT cpptrace_FOUND)
   FetchContent_Declare(
     cpptrace
     GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
-    GIT_TAG main
+    GIT_TAG v1.0.4
     GIT_SHALLOW TRUE
   )
 set(CPPTRACE_PROVIDE_EXPORT_SET_FOR_LIBDWARF OFF
@@ -109,7 +113,7 @@ if (NOT yaml-cpp_FOUND)
   FetchContent_Declare(
     yaml-cpp
     GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-    GIT_TAG master
+    GIT_TAG yaml-cpp-0.8.0
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(yaml-cpp)
@@ -125,7 +129,7 @@ if (NOT plog_FOUND)
   FetchContent_Declare(
     plog
     GIT_REPOSITORY https://github.com/SergiusTheBest/plog.git
-    GIT_TAG master
+    GIT_TAG 1.1.10
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(plog)
@@ -156,7 +160,7 @@ endif()
 if (NOT nlohmann_json_FOUND)
   FetchContent_Declare(json
     GIT_REPOSITORY https://github.com/nlohmann/json
-    GIT_TAG develop
+    GIT_TAG v3.11.3
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(json)
@@ -172,7 +176,7 @@ if (NOT TARGET tinyxml2::tinyxml2)
   FetchContent_Declare(
     tinyxml2
     GIT_REPOSITORY https://github.com/leethomason/tinyxml2.git
-    GIT_TAG        master
+    GIT_TAG        10.0.0
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(tinyxml2)
@@ -187,7 +191,7 @@ if (NOT TARGET efsw-static)
   FetchContent_Declare(
     efsw
     GIT_REPOSITORY https://github.com/SpartanJ/efsw.git
-    GIT_TAG        master
+    GIT_TAG        1.7.2
     GIT_SHALLOW TRUE
   )
   FetchContent_MakeAvailable(efsw)
@@ -209,6 +213,8 @@ add_library(C2LinesWordsCase SHARED C2LinesWordsCase.c)
 add_library(C3WordsIgnoreCase SHARED C3WordsIgnoreCase.c)
 add_library(C4WordsCase SHARED C4WordsCase.c)
 
+find_package(Threads REQUIRED)
+
 add_executable(main_judger oj_core.cpp parsers.cpp ProcessIO.cpp JudgeAPI.cpp JudgeBackend.cpp SubmissionWatcher.cpp common/AppConfig.cpp)
 
 target_include_directories(main_judger PRIVATE ${CMAKE_SOURCE_DIR})
@@ -224,14 +230,29 @@ target_link_libraries(main_judger
     ZLIB::ZLIB
     tinyxml2::tinyxml2
     efsw-static
+    Threads::Threads
 )
 
-add_compile_definitions(TOML_ENABLE_WINDOWS_COMPAT PLOG_ENABLE_WCHAR_INPUT)
-# Execute uname and store the result in a variable
-execute_process(COMMAND uname OUTPUT_VARIABLE uname_result OUTPUT_STRIP_TRAILING_WHITESPACE)
-
-# Check if the result matches MSYS or MINGW
-if (uname_result MATCHES "^MSYS" OR uname_result MATCHES "^MINGW")
+# Scoped to the C++ targets that use them (never the pure-C evaluator libs).
+target_compile_definitions(main_judger PRIVATE
+  TOML_ENABLE_WINDOWS_COMPAT
+  PLOG_ENABLE_WCHAR_INPUT
+)
+# Detect MSYS2/MinGW shells via uname, which only exists there; a missing
+# uname (native MSVC) simply leaves the result empty instead of erroring.
+# Stored in a cache variable so gui/ (built as a subdirectory) agrees with
+# the CLI on the platform mapping.
+find_program(JUDGER_UNAME_EXE uname)
+if(JUDGER_UNAME_EXE)
+  execute_process(COMMAND "${JUDGER_UNAME_EXE}"
+    OUTPUT_VARIABLE JUDGER_UNAME_RESULT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+endif()
+if(JUDGER_UNAME_RESULT MATCHES "^MSYS" OR JUDGER_UNAME_RESULT MATCHES "^MINGW")
+  set(JUDGER_IS_MSYS ON CACHE BOOL "Building inside an MSYS2/MinGW shell")
+endif()
+if(JUDGER_IS_MSYS)
   target_compile_definitions(main_judger PRIVATE __MSYS__)
 endif()
 # =====================
@@ -261,7 +282,6 @@ install(FILES JudgeAPI.h
 # =====================
 # GUI (optional, requires Qt)
 # =====================
-option(BUILD_GUI "Build Qt GUI application" OFF)
 if(BUILD_GUI)
   add_subdirectory(gui)
 endif()

@@ -25,11 +25,27 @@ EOL=''
 [ "$WIN" = 1 ] && EOL=$'\r'
 
 WORK="$(mktemp -d)"
+cleanup() {
+  # E2E_KEEP=1 preserves the workdir for debugging; always clean up otherwise,
+  # including on early exit (set -u aborts on the first unset variable).
+  if [ "${E2E_KEEP:-0}" != 1 ]; then
+    rm -rf "$WORK"
+  else
+    echo "workdir kept: $WORK"
+  fi
+}
+trap cleanup EXIT
 SUBS="$WORK/subs"
 TESTS="$WORK/tests"
 JDIR="$WORK/judgers"
 HOUSE="$WORK/house"
 mkdir -p "$SUBS" "$TESTS/A/1" "$JDIR" "$HOUSE"
+# Guard against a hung contestant binary hanging CI forever. The per-test
+# time limits are enforced by the judger itself; this is a last resort.
+TMO=""
+if command -v timeout >/dev/null 2>&1; then
+  TMO="timeout 590"
+fi
 cp "$JUDGERS"/*.dll "$JDIR/" 2>/dev/null || true
 cp "$JUDGERS"/*.so "$JDIR/" 2>/dev/null || true
 
@@ -63,7 +79,9 @@ run() { # $1=settings-file-content (optional; keeps existing file if omitted)
   if [ "$#" -gt 0 ] && [ -n "$1" ]; then
     printf '%s' "$1" >"$TESTS/A/Settings.cfg"
   fi
-  OUT=$("$BIN" -s "$SUBS" -t "$TESTS" -j "$JDIR" -c "$CFG" -n 4 2>&1)
+  # shellcheck disable=SC2086: $TMO is intentionally word-split (empty or
+  # "timeout 590").
+  OUT=$($TMO "$BIN" -s "$SUBS" -t "$TESTS" -j "$JDIR" -c "$CFG" -n 4 2>&1)
   if [ "${E2E_DEBUG:-0}" = 1 ]; then
     echo "$OUT" | grep -aE "\[dbg\]" | head -8
   fi
@@ -194,12 +212,6 @@ EOF
 set_expected
 run
 check_score u1 V 1
-
-if [ "${E2E_KEEP:-0}" = 1 ]; then
-  echo "workdir kept: $WORK"
-else
-  rm -rf "$WORK"
-fi
 
 echo
 echo "e2e: $PASS passed, $FAIL failed"

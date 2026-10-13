@@ -1,4 +1,5 @@
 #include "ContestData.h"
+#include "JudgeBackend.h"
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
@@ -25,20 +26,37 @@ static std::string zlib_compress(const std::string &in) {
   return out;
 }
 
-static std::string zlib_decompress(const std::string &in) {
-  std::string out(in.size() * 4, '\0');
-  uLongf dest = static_cast<uLongf>(out.size());
+// Returns true when in is a valid zlib stream (out may legitimately be
+// empty when the original was empty). Bounded against zip bombs.
+static bool zlib_try_decompress(const std::string &in, std::string &out) {
+  constexpr size_t kMaxOut = 128u << 20;
+  if (in.empty() || in.size() > (16u << 20))
+    return false;
+  // Decode into a local: out is only assigned on success, so callers can
+  // tell "valid empty stream" apart from "not a stream".
+  std::string buf(in.size() * 4 + 16, '\0');
+  uLongf dest = static_cast<uLongf>(buf.size());
   int rc;
-  while ((rc = uncompress(reinterpret_cast<Bytef *>(out.data()), &dest,
+  while ((rc = uncompress(reinterpret_cast<Bytef *>(buf.data()), &dest,
                           reinterpret_cast<const Bytef *>(in.data()),
                           static_cast<uLong>(in.size()))) == Z_BUF_ERROR) {
-    out.resize(out.size() * 2);
-    dest = static_cast<uLongf>(out.size());
+    if (buf.size() >= kMaxOut)
+      return false;
+    buf.resize(buf.size() * 2);
+    dest = static_cast<uLongf>(buf.size());
   }
   if (rc != Z_OK)
-    return {};
-  out.resize(dest);
-  return out;
+    return false;
+  buf.resize(dest);
+  out = std::move(buf);
+  return true;
+}
+
+static std::string zlib_decompress(const std::string &in) {
+  std::string out;
+  if (zlib_try_decompress(in, out))
+    return out;
+  return {};
 }
 
 static std::string readFile(const std::filesystem::path &p) {
@@ -57,27 +75,37 @@ static bool writeFile(const std::filesystem::path &p, const std::string &s) {
   return f.good();
 }
 
-// Read a file from a minizip archive, decompressing if zlib-compressed.
-// method 8 = DEFLATE. We try decompress; if it fails, return raw.
-static std::string readZipFile(unzFile uf) {
+// Read the currently-open entry of a minizip archive into out.
+// unzReadCurrentFile already inflates the ZIP layer; entries may carry one
+// more zlib layer (Themis Settings.cfg), so try that and keep whichever
+// decodes. Returns false on corrupt/truncated entries (an empty file still
+// returns true).
+static bool readZipFile(unzFile uf, std::string &out) {
   unz_file_info64 fi;
   if (unzGetCurrentFileInfo64(uf, &fi, nullptr, 0, nullptr, 0, nullptr, 0) !=
       UNZ_OK)
-    return {};
+    return false;
 
-  std::string raw(fi.uncompressed_size, '\0');
-  if (unzReadCurrentFile(uf, raw.data(),
-                         static_cast<unsigned>(fi.uncompressed_size)) !=
-      static_cast<int>(fi.uncompressed_size))
-    return {};
+  constexpr uLong kMaxEntry = 256u << 20;
+  if (fi.uncompressed_size > kMaxEntry)
+    return false;
 
-  // If the file was DEFLATE-compressed in the ZIP, try zlib decompress
-  if (fi.compression_method == 8) {
-    std::string decompressed = zlib_decompress(raw);
-    if (!decompressed.empty())
-      return decompressed;
-  }
-  return raw;
+  if (unzOpenCurrentFile(uf) != UNZ_OK)
+    return false;
+  std::string raw(static_cast<size_t>(fi.uncompressed_size), '\0');
+  int got = unzReadCurrentFile(uf, raw.data(),
+                               static_cast<unsigned>(fi.uncompressed_size));
+  unzCloseCurrentFile(uf);
+  if (got < 0 || static_cast<uLong>(got) != fi.uncompressed_size)
+    return false;
+  raw.resize(static_cast<size_t>(got));
+
+  std::string decompressed;
+  if (zlib_try_decompress(raw, decompressed))
+    out = std::move(decompressed); // may legitimately be empty
+  else
+    out = std::move(raw);
+  return true;
 }
 
 // ============================================================
@@ -234,9 +262,30 @@ bool importContestZip(const QString &contestPath, const QString &targetDir,
     if (name.empty() || name.back() == '/')
       continue; // skip directories
 
-    fs::path outPath = tgt / name;
-    std::string content = readZipFile(uf);
-    writeFile(outPath, content);
+    // Zip-Slip guard: reject absolute paths, drive letters and any parent
+    // ("..") component; ZIP separators are '/', but on Windows '\\' also
+    // separates, and path lexing below splits on both.
+    fs::path rel(name);
+    bool unsafe = rel.is_absolute() || name.find(':') != std::string::npos;
+    for (const auto &part : rel) {
+      if (part == "..") {
+        unsafe = true;
+        break;
+      }
+    }
+    if (unsafe)
+      continue;
+
+    fs::path outPath = tgt / rel;
+    std::string content;
+    if (!readZipFile(uf, content)) {
+      unzClose(uf);
+      return false; // corrupt/truncated entry: no partial imports
+    }
+    if (!writeFile(outPath, content)) {
+      unzClose(uf);
+      return false;
+    }
   } while (unzGoToNextFile(uf) == UNZ_OK);
 
   unzClose(uf);
@@ -612,7 +661,8 @@ fromGuiCompilers(const std::vector<GuiCompilerItem> &items) {
 // Build Testcases map from tests directory (for judge())
 // ============================================================
 std::unordered_map<std::string, Testcases>
-buildTestcasesMap(const fs::path &testsDir) {
+buildTestcasesMap(const fs::path &testsDir,
+                  const std::filesystem::path &judgersDir) {
   std::unordered_map<std::string, Testcases> result;
 
   for (auto &fd : fs::directory_iterator(testsDir)) {
@@ -641,24 +691,9 @@ buildTestcasesMap(const fs::path &testsDir) {
             {gs.name.toStdString(), gs.memoryLimit, gs.timeLimit, gs.mark});
       }
 
-      // Fix evaluator path: lib prefix + platform extension
-      fs::path f(tc.EvaluatorName);
-      f.replace_filename(
-#if defined(__unix__) || defined(__linux__) || defined(__APPLE__) ||           \
-    defined(__MSYS__)
-          "lib" +
-#endif
-          f.filename().string());
-      f.replace_extension(
-#if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
-          ".so"
-#elif defined(_WIN32)
-          ".dll"
-#else
-          f.extension()
-#endif
-      );
-      tc.EvaluatorName = f.string();
+      // Shared platform mapping with the CLI (see resolveEvaluatorName):
+      // prefer the evaluator variant that actually exists.
+      tc.EvaluatorName = resolveEvaluatorName(tc.EvaluatorName, judgersDir);
     } else {
       // No Settings.cfg — create default test case
       Testcases &tc = result[name];

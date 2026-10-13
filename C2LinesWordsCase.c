@@ -26,6 +26,8 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <wchar.h>
+#include <wctype.h>
 #include <windows.h>
 #endif
 
@@ -72,8 +74,8 @@ typedef char str;
   strncat(b, s, (size_t)((c) > strlen(b) + 1 ? (c) - strlen(b) - 1 : 0))
 #define str_cpy_s(d, c, s) strncpy(d, s, c)
 #define str_tok strtok_r
-#define str_tolower tolower
-#define str_space isspace
+#define str_tolower(c) tolower((unsigned char)(c))
+#define str_space(c) isspace((unsigned char)(c))
 #define str_fopen(p, m) fopen(p, m)
 
 #include <unistd.h>
@@ -87,6 +89,8 @@ static str **str_split(const str *s, str delim) {
     return NULL;
 
   str *tmp = str_dup(s);
+  if (!tmp)
+    return NULL;
   int count = 1;
 
   for (str *p = tmp; *p; ++p)
@@ -218,8 +222,25 @@ static str *read_line(FILE *f, int *ok) {
 // Returns 1 if equal, 0 if different, -1 on open error / allocation failure.
 // ------------------------------------------------------------
 static int compare_text_files(const str *f1, const str *f2) {
-  FILE *a = str_fopen(f1, STR_LIT("r"));
-  FILE *b = str_fopen(f2, STR_LIT("r"));
+  // Windows needs text mode: its fgetws widens bytes to wchar_t only on
+  // text-mode streams (binary mode would read raw 2-byte units as garbage).
+  // MSVCRT tolerates the preceding byte-oriented skip_bom in practice;
+  // rtrim() strips the \r that text mode leaves from CRLF line endings.
+  // On POSIX "rb" and "r" are identical.
+  FILE *a = str_fopen(f1,
+#ifdef _WIN32
+                      STR_LIT("r")
+#else
+                      STR_LIT("rb")
+#endif
+  );
+  FILE *b = str_fopen(f2,
+#ifdef _WIN32
+                      STR_LIT("r")
+#else
+                      STR_LIT("rb")
+#endif
+  );
 
   if (!a || !b) {
     if (a)
@@ -334,6 +355,8 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 
   const size_t BUF = 131072;
   str *comments = calloc(BUF, sizeof(str));
+  if (!comments)
+    return 0.0;
 
   str **files = str_split(testOutputs, STR_LIT('|'));
   if (!files) {
@@ -349,6 +372,7 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 #define V_MATCH_STR STR_LIT("K\x1EBFt qu\x1EA3 kh\x1EDBp \x111\xE1p \xE1n!\n")
 #define V_MISMATCH_STR                                                         \
   STR_LIT("K\x1EBFt qu\x1EA3 KH\xC1\x43 \x111\xE1p \xE1n!\n")
+#define V_ERROR_STR STR_LIT("ERROR\n")
 #else
 #define V_MISSING_STR                                                          \
   "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n"
@@ -358,19 +382,29 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 #define V_MISMATCH_STR                                                         \
   "K\xE1\xBA\xBFt qu\xE1\xBA\xA3 KH\xC3\x81"                                   \
   "C \xE1\xBB\x99\xC3\xA1p \xC3\xA1n!\n"
+#define V_ERROR_STR "ERROR\n"
 #endif
 
   for (int i = 0; files[i]; ++i) {
-    if (join_path(exp, 1024, testsDir, files[i]) &&
-        join_path(act, 1024, contestantsDir, files[i])) {
-      if (!file_exists(act)) {
-        /* Contestant produced no result file */
-        str_cat_s(comments, BUF, V_MISSING_STR);
-      } else if (compare_text_files(exp, act) == 1) {
+    if (!join_path(exp, 1024, testsDir, files[i]) ||
+        !join_path(act, 1024, contestantsDir, files[i])) {
+      str_cat_s(comments, BUF, V_ERROR_STR);
+      free(files[i]);
+      continue;
+    }
+    if (!file_exists(act)) {
+      /* Contestant produced no result file */
+      str_cat_s(comments, BUF, V_MISSING_STR);
+    } else {
+      int v = compare_text_files(exp, act);
+      if (v == 1) {
         str_cat_s(comments, BUF, V_MATCH_STR);
         score += 1.0;
-      } else
+      } else if (v == 0) {
         str_cat_s(comments, BUF, V_MISMATCH_STR);
+      } else {
+        str_cat_s(comments, BUF, V_ERROR_STR);
+      }
     }
     free(files[i]);
   }
@@ -379,6 +413,12 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
   *comments_out = comments;
   return score;
 }
+
+// ------------------------------------------------------------
+// Evaluator-side deallocator for comment buffers (see JudgeAPI.h).
+// ------------------------------------------------------------
+DLL_EXPORT
+void API_CALL FreeJudgeComment(void *comment) { free(comment); }
 
 #ifdef __cplusplus
 }

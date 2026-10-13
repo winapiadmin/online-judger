@@ -5,6 +5,7 @@
 #include "TestDataDialog.h"
 #include <QAction>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QFileDialog>
@@ -193,14 +194,18 @@ void MainWindow::startBatchReTest(const QString &problem) {
   if (total == 0)
     return;
 
+  // Evaluator shared libraries live next to the executable, not necessarily
+  // in the working directory (file dialogs may leave it anywhere).
+  fs::path judgerPath =
+      QCoreApplication::applicationDirPath().toStdString();
+  if (judgerPath.empty())
+    judgerPath = fs::current_path();
+
   // Build testcases map and configuration for judge()
   fs::path testsDir(m_data.testsPath.toStdString());
-  auto testcases = buildTestcasesMap(testsDir);
+  auto testcases = buildTestcasesMap(testsDir, judgerPath);
   Configuration conf = m_config.configuration();
   conf.environment.contestHouse = "/tmp";
-
-  // Evaluator shared libraries: current working directory
-  fs::path judgerPath = fs::current_path();
 
   QString problemStd = problem;
   std::string problemStr = problemStd.toStdString();

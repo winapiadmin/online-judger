@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -16,6 +17,9 @@
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+#else
+#include <csignal>
+#include <unistd.h>
 #endif
 using namespace std;
 namespace fs = std::filesystem;
@@ -69,13 +73,18 @@ string random_string(size_t length) {
 vector<string> split_args_quoted(const string &s) {
   vector<string> out;
   string cur;
-  bool in_quote = false;
+  char quote = 0; // 0 = unquoted, otherwise the active quote character
 
   for (size_t i = 0; i < s.size(); ++i) {
     char c = s[i];
-    if (c == '"') {
-      in_quote = !in_quote;
-    } else if (isspace((unsigned char)c) && !in_quote) {
+    if (quote) {
+      if (c == quote)
+        quote = 0;
+      else
+        cur += c;
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+    } else if (isspace((unsigned char)c)) {
       if (!cur.empty()) {
         out.push_back(cur);
         cur.clear();
@@ -117,21 +126,50 @@ optional<fs::path> find_source_file(const fs::path &submissionDir,
 }
 
 optional<fs::path> find_executable(const fs::path &workdir) {
-  for (const auto &entry : fs::directory_iterator(workdir)) {
-    if (!entry.is_regular_file())
+  // Pick the most recently modified executable-looking file, skipping
+  // sources and libraries: directory iteration order is unspecified, so a
+  // stray script/DLL must not win over the compiler's output.
+  static const char *kNonExecExts[] = {
+      ".cpp", ".c",  ".h",   ".hpp", ".hxx", ".cc",  ".cxx", ".pas",
+      ".pp",  ".java", ".py", ".class", ".o",  ".obj", ".a",   ".lib",
+      ".pdb", ".ilk", ".exp", ".dll",  ".so",  ".dylib"};
+  optional<fs::path> best;
+  fs::file_time_type bestTime = fs::file_time_type::min();
+  std::error_code ec;
+  for (const auto &entry : fs::directory_iterator(workdir, ec)) {
+    if (ec || !entry.is_regular_file())
       continue;
-
+    string ext = entry.path().extension().string();
+    bool skip = false;
+    for (const char *se : kNonExecExts)
+      if (iequals(ext, se)) {
+        skip = true;
+        break;
+      }
+    if (skip)
+      continue;
 #ifdef _WIN32
-    DWORD a;
-    if (GetBinaryTypeW(entry.path().wstring().c_str(), &a))
-      return entry.path();
+    DWORD a = 0;
+    if (!GetBinaryTypeW(entry.path().wstring().c_str(), &a))
+      continue; // not a loadable image
 #else
     auto perms = entry.status().permissions();
-    if ((perms & fs::perms::owner_exec) != fs::perms::none)
-      return entry.path();
+    if ((perms & fs::perms::owner_exec) == fs::perms::none)
+      continue;
 #endif
+    std::error_code tec;
+    auto t = fs::last_write_time(entry.path(), tec);
+    if (tec) {
+      if (!best)
+        best = entry.path();
+      continue;
+    }
+    if (!best || t > bestTime) {
+      best = entry.path();
+      bestTime = t;
+    }
   }
-  return nullopt;
+  return best;
 }
 
 bool parse_compiler_cmd(const std::string &cmd, std::string &rawCmd,
@@ -169,24 +207,83 @@ std::string load_file_to_string(const fs::path &filename) {
 // Timestamp prefix so history files from different runs never collide.
 // Millisecond precision matters: several short-lived processes can judge
 // within the same second, and the per-process counter restarts at 1.
-// Lexicographic order == chronological order.
+// The PID disambiguates concurrent judge processes sharing a submissions
+// dir. Lexicographic order == chronological order.
 static string history_stamp() {
   auto now = std::chrono::system_clock::now();
   std::time_t t = std::chrono::system_clock::to_time_t(now);
   std::tm tm{};
 #ifdef _WIN32
   localtime_s(&tm, &t);
+  long pid = (long)GetCurrentProcessId();
 #else
   localtime_r(&t, &tm);
+  long pid = (long)getpid();
 #endif
   char stamp[32];
   std::strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", &tm);
   auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now.time_since_epoch()) %
             1000;
-  char frac[8];
-  snprintf(frac, sizeof(frac), ".%03d", (int)ms.count());
+  char frac[16];
+  snprintf(frac, sizeof(frac), ".%03d-p%ld", (int)ms.count(), pid);
   return string(stamp) + frac;
+}
+
+// Classify a contestant program's exit code. Codes 126/127 are this host's
+// own spawn failures (chdir/exec in run_command), and on POSIX codes >= 128
+// encode signal deaths; SIGXCPU/SIGKILL map to TLE/MLE so the memory verdict
+// is actually reachable instead of everything collapsing into IR.
+[[noreturn]] static void throw_run_error(uint32_t ec) {
+#ifndef _WIN32
+  if (ec == 126 || ec == 127)
+    throw CPError<CPErrors::IE>("contestant program failed to start");
+  if (ec >= 128) {
+    unsigned sig = ec - 128;
+    if (sig == (unsigned)SIGXCPU)
+      throw CPError<CPErrors::TLE>();
+    if (sig == (unsigned)SIGKILL)
+      throw CPError<CPErrors::MLE>(); // OOM/rlimit kill, not our own TLE
+  }
+#endif
+  throw CPError<CPErrors::IR>(ec);
+}
+
+std::string
+resolveEvaluatorName(const std::string &configured,
+                     const fs::path &judgersDir) {
+  fs::path orig(configured);
+  fs::path mapped = orig;
+  {
+    std::string fn = mapped.filename().string();
+#if defined(__unix__) || defined(__linux__) || defined(__APPLE__) ||           \
+    defined(__MSYS__)
+    // Idempotent: only prepend "lib" when missing, otherwise an already
+    // correct "libC5Binary.so" would become "liblibC5Binary.so".
+    if (fn.rfind("lib", 0) != 0)
+      fn = "lib" + fn;
+#endif
+    mapped.replace_filename(fn);
+  }
+  mapped.replace_extension(
+#if defined(__unix__) || defined(__linux__) || defined(__APPLE__)
+      ".so"
+#elif defined(_WIN32)
+      ".dll"
+#else
+      mapped.extension().string()
+#endif
+  );
+  // Prefer whichever variant actually exists: MSVC builds ship
+  // "C5Binary.dll" with no lib prefix even when __MSYS__ is defined.
+  if (judgersDir.empty())
+    return mapped.string();
+  std::error_code ec;
+  if (fs::exists(judgersDir / mapped.filename(), ec))
+    return mapped.string();
+  if (fs::exists(judgersDir / orig.filename(), ec))
+    return orig.string();
+  return mapped.string(); // neither: let Load() report the mapped name
 }
 
 void judge(fs::path subdir, fs::path tdir, string problem, string user,
@@ -195,10 +292,20 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
            const fs::path &judger_path) {
   string fn = history_stamp() + "-" + std::to_string(++g_idx) + "[" + user +
               "][" + problem + "].txt";
-  fs::create_directory(subdir / "$History");
+  {
+    std::error_code dce;
+    fs::create_directories(subdir / "$History", dce);
+    if (dce) {
+      PLOGE << "cannot create history dir " << (subdir / "$History") << ": "
+            << dce.message();
+      set_score(user, problem, "X", 0.0);
+      return;
+    }
+  }
   ofstream out(subdir / "$History" / fn);
   if (!out.is_open()) {
     PLOGE << subdir / "$History" / fn << " (" << strerror(errno) << ")";
+    set_score(user, problem, "X", 0.0);
     return;
   }
 // WARNING: NotImplemented multi input/output files
@@ -217,6 +324,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   fs::path sourceDir = subdir / user;
   if (!fs::is_directory(sourceDir)) {
     PLOGE << sourceDir << " is not a directory";
+    set_score(user, problem, "X", 0.0);
     return;
   }
 
@@ -235,6 +343,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   if (!compiler) {
     _LOG(plog::error,
          "[" << user << "/" << problem << "] no compiler for " << ext);
+    set_score(user, problem, "X", 0.0);
     return;
   }
 
@@ -242,6 +351,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   if (!parse_compiler_cmd(compiler->cmd, rawCmd, rawWorkDir)) {
     PLOGE << "[" << user << "/" << problem << "] malformed compiler command ("
           << compiler->cmd << ')';
+    set_score(user, problem, "X", 0.0);
     return;
   }
 
@@ -307,6 +417,7 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
   if (!exe) {
     _LOG(plog::error,
          "[" << user << "/" << problem << "] executable not found");
+    set_score(user, problem, "X", 0.0);
     return;
   }
 
@@ -340,13 +451,23 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
 
     try {
       if (tests.UseStdIn) {
-        std::string input =
-            load_file_to_string(tdir / problem / tc.Name / tests.InputFile);
+        std::string input;
+        try {
+          input =
+              load_file_to_string(tdir / problem / tc.Name / tests.InputFile);
+        } catch (const std::exception &e) {
+          _LOG(plog::error, "[" << user << "/" << problem
+                                << "] missing test input " << tc.Name << ": "
+                                << e.what());
+          set_score(user, problem, "X", 0.0);
+          out.close();
+          return;
+        }
         ProcessResult result =
             run_command({fs::canonical(*exe).string()}, workdir, input,
                         timeLimit, memoryLimit);
         if (result.exit_code != 0)
-          throw CPError<CPErrors::IR>(result.exit_code);
+          throw_run_error(result.exit_code);
         if (result.time > timeLimit)
           throw CPError<CPErrors::TLE>();
 
@@ -357,16 +478,31 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
           // never be written into the test data directory.
           ofstream output(workdir / tests.OutputFile, ios::binary | ios::trunc);
           output << result.stdout_data;
+          output.close();
+          if (!output) {
+            _LOG(plog::error, "[" << user << "/" << problem
+                                  << "] cannot write contestant output");
+            continue;
+          }
         }
       } else {
+        std::error_code cpec;
         fs::copy_file(tdir / problem / tc.Name / tests.InputFile,
                       workdir / tests.InputFile,
-                      fs::copy_options::overwrite_existing);
+                      fs::copy_options::overwrite_existing, cpec);
+        if (cpec) {
+          _LOG(plog::error, "[" << user << "/" << problem
+                                << "] missing test input " << tc.Name << ": "
+                                << cpec.message());
+          set_score(user, problem, "X", 0.0);
+          out.close();
+          return;
+        }
 
         ProcessResult result = run_command({fs::canonical(*exe).string()},
                                            workdir, "", timeLimit, memoryLimit);
         if (result.exit_code != 0)
-          throw CPError<CPErrors::IR>(result.exit_code);
+          throw_run_error(result.exit_code);
         if (result.time > timeLimit)
           throw CPError<CPErrors::TLE>();
 
@@ -375,17 +511,30 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
         if (tests.UseStdOut) {
           ofstream output(workdir / tests.OutputFile, ios::binary | ios::trunc);
           output << result.stdout_data;
+          output.close();
+          if (!output) {
+            _LOG(plog::error, "[" << user << "/" << problem
+                                  << "] cannot write contestant output");
+            continue;
+          }
         }
       }
       std::string comments;
-      double _points;
+      double _points = 0.0;
       {
         std::lock_guard<std::mutex> eval_lock(evaluator_mutex(evaluatorKey));
-        _points = CallJudgeUTF8(
-                      judgeFn, fs::canonical(workdir).string().c_str(),
-                      (tdir / problem / tc.Name).string().c_str(),
-                      tests.OutputFile.c_str(), problem.c_str(), &comments) *
-                  (tc.Mark == -1 ? tests.Mark : tc.Mark);
+        double raw = CallJudgeUTF8(
+            judgeFn, fs::canonical(workdir).string().c_str(),
+            (tdir / problem / tc.Name).string().c_str(), tests.OutputFile.c_str(),
+            problem.c_str(), &comments);
+        double mark = (tc.Mark == -1 ? tests.Mark : tc.Mark);
+        // A buggy evaluator must not corrupt the total with NaN/negative
+        // or out-of-range scores.
+        if (!std::isfinite(raw) || raw < 0.0)
+          raw = 0.0;
+        if (raw > 1.0)
+          raw = 1.0;
+        _points = raw * mark;
       }
 
       _LOG(plog::info, "[" << user << "/" << problem << "/" << tc.Name
@@ -393,7 +542,16 @@ void judge(fs::path subdir, fs::path tdir, string problem, string user,
                            << comments);
       points += _points;
     } catch (CPError<CPErrors::TLE> &e) {
+      (void)e;
       _LOG(plog::error, "[" << user << "/" << problem << "] TLEd " << tc.Name);
+    } catch (CPError<CPErrors::MLE> &e) {
+      (void)e;
+      _LOG(plog::error,
+           "[" << user << "/" << problem << "] MLEd " << tc.Name);
+    } catch (CPError<CPErrors::OLE> &e) {
+      (void)e;
+      _LOG(plog::error, "[" << user << "/" << problem
+                            << "] output limit exceeded on " << tc.Name);
     } catch (CPError<CPErrors::IR> &e) {
       _LOG(plog::error, "[" << user << "/" << problem << "] exited with code 0x"
                             << std::hex << e.exit_code << std::dec);

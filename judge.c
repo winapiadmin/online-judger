@@ -144,15 +144,27 @@ static int compare_binary_files_ex(const str *f1, const str *f2,
 
   long len1 = 0, len2 = 0;
   if (diff) {
+    // ftell/fseek can fail (or wrap past 2 GiB where long is 32-bit);
+    // report -1 instead of a wrapped size.
     long cur = ftell(a);
-    fseek(a, 0, SEEK_END);
-    len1 = ftell(a);
-    fseek(a, cur, SEEK_SET);
+    if (cur >= 0 && fseek(a, 0, SEEK_END) == 0) {
+      len1 = ftell(a);
+      if (len1 < 0)
+        len1 = -1;
+      fseek(a, cur, SEEK_SET);
+    } else {
+      len1 = -1;
+    }
 
     cur = ftell(b);
-    fseek(b, 0, SEEK_END);
-    len2 = ftell(b);
-    fseek(b, cur, SEEK_SET);
+    if (cur >= 0 && fseek(b, 0, SEEK_END) == 0) {
+      len2 = ftell(b);
+      if (len2 < 0)
+        len2 = -1;
+      fseek(b, cur, SEEK_SET);
+    } else {
+      len2 = -1;
+    }
   }
 
   int ca, cb;
@@ -256,6 +268,9 @@ static int file_exists(const str *path) {
 }
 
 #ifndef C5_STRICT
+// Forward declaration (defined below next to Judge).
+static void cat_bounded(str *dst, size_t cap, const str *s);
+
 // Append an ASCII string to the (wide or narrow) comment buffer.
 static void cat_ascii(str *comments, size_t cap, const char *s) {
 #ifdef _WIN32
@@ -264,10 +279,16 @@ static void cat_ascii(str *comments, size_t cap, const char *s) {
   if (!tmp)
     return;
   if (mbstowcs(tmp, s, n + 1) != (size_t)-1)
-    wcscat_s(comments, cap, tmp);
+    cat_bounded(comments, cap, tmp);
   free(tmp);
 #else
-  strncat(comments, s, cap - strlen(comments) - 1);
+  {
+    // Guard the subtraction: a full buffer would wrap to SIZE_MAX and
+    // overflow the destination.
+    size_t used = strlen(comments);
+    if (used + 1 < cap)
+      strncat(comments, s, cap - used - 1);
+  }
 #endif
 }
 
@@ -298,6 +319,26 @@ static void append_diff_details(str *comments, size_t cap,
 #endif /* !C5_STRICT */
 
 // ------------------------------------------------------------
+// Bounded comment append: truncate instead of overflowing. (On Windows
+// wcscat_s would invoke the invalid-parameter handler and wipe the whole
+// buffer, losing every verdict recorded so far.)
+// ------------------------------------------------------------
+static void cat_bounded(str *dst, size_t cap, const str *s) {
+#ifdef _WIN32
+  size_t dl = wcslen(dst), sl = wcslen(s);
+  if (dl + sl + 1 > cap) {
+    if (dl + 1 >= cap)
+      return;
+    wcsncat_s(dst, cap, s, cap - dl - 1);
+  } else {
+    wcscat_s(dst, cap, s);
+  }
+#else
+  str_cat_s(dst, cap, s);
+#endif
+}
+
+// ------------------------------------------------------------
 // Exported entry
 // ------------------------------------------------------------
 DLL_EXPORT
@@ -308,6 +349,9 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
   if (!comments_out)
     return 0.0;
   *comments_out = NULL;
+
+  if (!contestantsDir || !testsDir || !testOutputs)
+    return 0.0;
 
   const size_t BUF_CCH = 131072;
   str *comments = calloc(BUF_CCH, sizeof(str));
@@ -330,23 +374,18 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
       continue;
     }
 
-#ifdef _WIN32
-    wcscat_s(comments, BUF_CCH, files[i]);
-    wcscat_s(comments, BUF_CCH, STR_LIT(": "));
-#else
-    str_cat_s(comments, BUF_CCH, files[i]);
-    str_cat_s(comments, BUF_CCH, ": ");
-#endif
+  cat_bounded(comments, BUF_CCH, files[i]);
+  cat_bounded(comments, BUF_CCH, STR_LIT(": "));
 
     if (!file_exists(act)) {
       /* Contestant produced no result file */
 #ifdef _WIN32
-      wcscat_s(comments, BUF_CCH,
-               STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n"));
+      cat_bounded(comments, BUF_CCH,
+                  STR_LIT("Kh\xF4ng t\xECm th\x1EA5y k\x1EBFt qu\x1EA3\n"));
 #else
-      str_cat_s(comments, BUF_CCH,
-                "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y "
-                "k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n");
+      cat_bounded(comments, BUF_CCH,
+                  "Kh\xC3\xB4ng t\xC3\xACm th\xE1\xBA\xA5y "
+                  "k\xE1\xBA\xBFt qu\xE1\xBA\xA3\n");
 #endif
       free(files[i]);
       continue;
@@ -360,27 +399,15 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
 #endif
 
     if (cmp == 1) {
-#ifdef _WIN32
-      wcscat_s(comments, BUF_CCH, STR_LIT("PASSED\n"));
-#else
-      str_cat_s(comments, BUF_CCH, "PASSED\n");
-#endif
+      cat_bounded(comments, BUF_CCH, STR_LIT("PASSED\n"));
       score += 1.0;
     } else if (cmp == 0) {
-#ifdef _WIN32
-      wcscat_s(comments, BUF_CCH, STR_LIT("FAILED\n"));
-#else
-      str_cat_s(comments, BUF_CCH, "FAILED\n");
-#endif
+      cat_bounded(comments, BUF_CCH, STR_LIT("FAILED\n"));
 #ifndef C5_STRICT
       append_diff_details(comments, BUF_CCH, &diff_info);
 #endif
     } else {
-#ifdef _WIN32
-      wcscat_s(comments, BUF_CCH, STR_LIT("ERROR\n"));
-#else
-      str_cat_s(comments, BUF_CCH, "ERROR\n");
-#endif
+      cat_bounded(comments, BUF_CCH, STR_LIT("ERROR\n"));
     }
 
     free(files[i]);
@@ -400,6 +427,12 @@ double API_CALL Judge(str *contestantsDir, str *testsDir, str *testOutputs,
   free(comments);
   return score;
 }
+
+// ------------------------------------------------------------
+// Evaluator-side deallocator for comment buffers (see JudgeAPI.h).
+// ------------------------------------------------------------
+DLL_EXPORT
+void API_CALL FreeJudgeComment(void *comment) { free(comment); }
 
 #ifdef __cplusplus
 }

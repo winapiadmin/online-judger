@@ -135,9 +135,9 @@ static double judge_a_out(char *comments_utf8, size_t cap) {
     if (comments)
       str_t_to_utf8(comments, comments_utf8, cap);
   }
-#ifdef _WIN32
-  free(comments); /* host-side copy of a shared-CRT allocation */
-#endif
+  // Test binaries link the evaluator source directly, so the comment buffer
+  // always comes from this binary's own heap on every platform.
+  free(comments);
   free(a);
   free(b);
   free(o);

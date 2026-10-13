@@ -40,7 +40,33 @@ int main(void) {
   run("one two three\n", "one two\n", &s, c, sizeof(c));
   CHECK(s == 0.0, "C3 word count must match");
 
-  // 6. missing result file verdict
+  // 6. whitespace shape is irrelevant (tabs/newlines vs spaces)
+  run("a\tb\n\nc  d\n", "a b c d\n", &s, c, sizeof(c));
+  CHECK(s == 1.0, "C3 must treat all whitespace alike");
+
+  // 7. over-long words: a single 8000-char word must compare exactly.
+  // Guards the old fixed-buffer truncation (common-prefix false positive).
+  {
+    const size_t n = 8000;
+    char *exp = malloc(n + 2), *act = malloc(n + 2);
+    memset(exp, 'a', n);
+    memset(act, 'a', n);
+    exp[n] = '\n';
+    exp[n + 1] = '\0';
+    act[n] = '\n';
+    act[n + 1] = '\0';
+    run(exp, act, &s, c, sizeof(c));
+    CHECK(s == 1.0, "C3 identical over-long word should score 1.0");
+
+    // 8. same, but differing in the last character (past any fixed buffer)
+    act[n - 1] = 'b';
+    run(exp, act, &s, c, sizeof(c));
+    CHECK(s == 0.0, "C3 must detect a tail difference in an over-long word");
+    free(exp);
+    free(act);
+  }
+
+  // 9. missing result file verdict
   remove_actual();
   run("anything\n", NULL, &s, c, sizeof(c));
   CHECK(s == 0.0, "C3 missing result file scores 0");
